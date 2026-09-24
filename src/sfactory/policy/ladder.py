@@ -58,6 +58,13 @@ class LadderConfig:
     ranker: str = "score_asc"
     capital: float = 100_000.0
     entry_delay: int = 0               # robustness only: execution delay in bars (0 in every real policy)
+    # S7 symbol selection (symbol-based rows): keep the top-N symbols by IS t-stat with t >= symbol_min_t
+    symbol_select: int = 0             # 0 = pooled universe row (no per-symbol selection)
+    symbol_min_t: float = 1.0
+    symbol_min_trades: int = 10
+    symbol_ranker: str = "is_tstat"    # is_tstat | random (benchmark only)
+    symbol_seed: int = 0
+    asset_class: str = "equities"
 
     @property
     def level(self) -> int:
@@ -86,7 +93,9 @@ class LadderConfig:
     @property
     def rid(self) -> str:
         side = "BUY" if self.direction == 1 else "SELL"
-        return self.row_id or f"{self.family}-{self.method.upper()}-{side}-EQ"
+        suffix = {"equities": "EQ", "fx": "FX", "indices": "IX", "metals": "MT"}.get(self.asset_class, "X")
+        sel = f"-TOP{self.symbol_select}" if self.symbol_select else ""
+        return self.row_id or f"{self.family}-{self.method.upper()}-{side}-{suffix}{sel}"
 
 
 @dataclass
@@ -148,8 +157,32 @@ class _FoldView:
             self.memo[key] = _concat([self.fm.slice_is(t, self.fold) for t in self.trades(thr, ex, fl)])
         return self.memo[key]
 
-    def oos_df(self, thr: float, ex: ExitSpec, fl: tuple) -> pl.DataFrame:
-        return _concat([self.fm.slice_oos(t, self.fold) for t in self.trades(thr, ex, fl)])
+    def oos_df(self, thr: float, ex: ExitSpec, fl: tuple, symbols: list | None = None) -> pl.DataFrame:
+        frames = [self.fm.slice_oos(t, self.fold) for t in self.trades(thr, ex, fl)]
+        if symbols is not None:
+            keep = set(symbols)
+            frames = [f for f, s in zip(frames, self.elig) if s in keep]
+        return _concat(frames)
+
+    def per_symbol_is(self, thr: float, ex: ExitSpec, fl: tuple) -> dict:
+        return {s: self.fm.slice_is(t, self.fold) for s, t in zip(self.elig, self.trades(thr, ex, fl))}
+
+
+def select_symbols(view: _FoldView, cfg: LadderConfig, thr: float, ex: ExitSpec, fl: tuple) -> tuple[list, dict]:
+    """S7: per-symbol IS t-stat with the row's chosen settings; top-N with t >= min_t (random = benchmark)."""
+    stats = {}
+    for s, df in view.per_symbol_is(thr, ex, fl).items():
+        st = trade_stats(df)
+        stats[s] = st["t_stat"] if st["n"] >= cfg.symbol_min_trades else np.nan
+    if cfg.symbol_ranker == "random":
+        rng = np.random.default_rng(cfg.symbol_seed * 100_003 + view.fold.dp.toordinal())
+        pool = sorted(stats)
+        chosen = sorted(rng.choice(pool, min(cfg.symbol_select, len(pool)), replace=False).tolist()) if pool else []
+    else:
+        ok = sorted((s for s, t in stats.items() if not np.isnan(t) and t >= cfg.symbol_min_t),
+                    key=lambda s: (-stats[s], s))
+        chosen = sorted(ok[: cfg.symbol_select])
+    return chosen, {s: (None if np.isnan(t) else round(float(t), 4)) for s, t in stats.items()}
 
 
 def decide_fold(view: _FoldView, cfg: LadderConfig) -> tuple[float, ExitSpec, tuple, dict]:
@@ -203,6 +236,9 @@ def decide_fold(view: _FoldView, cfg: LadderConfig) -> tuple[float, ExitSpec, tu
         if passing:
             chosen = (max(passing, key=lambda c: c[1])[0],)
     d["filters"] = [f.id for f in cfg.structural + chosen]
+    if cfg.symbol_select > 0:
+        syms, sym_t = select_symbols(view, cfg, thr, ex, chosen)
+        d["symbols"], d["symbol_is_t"] = syms, sym_t
     return thr, ex, chosen, d
 
 
@@ -217,7 +253,7 @@ def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membe
         view = _FoldView(fm, cache, cfg, fold, elig)
         thr, ex, chosen, d = decide_fold(view, cfg)
         res.decisions.append(d)
-        f_oos = view.oos_df(thr, ex, chosen)
+        f_oos = view.oos_df(thr, ex, chosen, d.get("symbols"))
         if len(f_oos):
             oos.append(f_oos.with_columns(pl.lit(fold.index).alias("fold")))
     stitched = pl.concat(oos) if oos else pl.DataFrame()

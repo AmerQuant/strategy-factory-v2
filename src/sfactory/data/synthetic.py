@@ -17,8 +17,12 @@ def business_days(start: date, n: int) -> list[date]:
 
 
 def make_market(n_symbols: int = 20, n_days: int = 2600, seed: int = 7, kind: str = "random_walk",
-                start: date = date(2010, 1, 4), mr_strength: float = 0.25):
+                start: date = date(2010, 1, 4), mr_strength: float = 0.25, kinds: list | None = None,
+                dividends: bool = True, listings: bool = True):
     """Returns (bars, dividends, membership). kind: 'random_walk' | 'mean_revert' | 'trending'.
+
+    kinds: optional per-symbol kinds (heterogeneous market, e.g. for symbol-selection tests).
+    dividends=False / listings=False give an FX-like market (no dividends, every symbol listed throughout).
 
     Split-only prices drop by the dividend amount on ex-dates, like real data.
     Some symbols join late and some are delisted early (their data stops).
@@ -31,17 +35,18 @@ def make_market(n_symbols: int = 20, n_days: int = 2600, seed: int = 7, kind: st
         vol = rng.uniform(0.01, 0.025)
         eps = rng.normal(0, vol, n_days)
         r = eps.copy()
-        if kind == "mean_revert":
+        k_i = kinds[i] if kinds is not None else kind
+        if k_i == "mean_revert":
             for t in range(1, n_days):
                 r[t] = eps[t] - mr_strength * r[t - 1]
-        elif kind == "trending":  # slow-moving drift regimes -> exploitable trends
+        elif k_i == "trending":  # slow-moving drift regimes -> exploitable trends
             drift = np.zeros(n_days)
             for t in range(1, n_days):
                 drift[t] = 0.99 * drift[t - 1] + rng.normal(0, vol * 0.02)
             r = eps + drift
-        s_idx = int(rng.integers(1, n_days // 4)) if i % 4 == 0 else 0
-        e_idx = int(rng.integers(3 * n_days // 4, n_days)) if i % 5 == 0 else n_days
-        div_idx = list(range(s_idx + 60, e_idx, 63))
+        s_idx = int(rng.integers(1, n_days // 4)) if (listings and i % 4 == 0) else 0
+        e_idx = int(rng.integers(3 * n_days // 4, n_days)) if (listings and i % 5 == 0) else n_days
+        div_idx = list(range(s_idx + 60, e_idx, 63)) if dividends else []
         close = np.empty(n_days)
         level = 50.0
         div_amt = {}

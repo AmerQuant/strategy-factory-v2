@@ -25,7 +25,8 @@ import polars as pl
 from sfactory.evaluation.ablation import aligned_daily
 from sfactory.evaluation.robustness import run_robustness
 from sfactory.policy.catalog import taxonomy
-from sfactory.policy.ladder import LadderConfig, run_ladder
+from sfactory.policy.ensemble import run_row_any
+from sfactory.policy.ladder import LadderConfig
 from sfactory.portfolio.combine import combine_rows, effective_n, family_ensemble
 from sfactory.registry.repo import Registry
 from sfactory.stats.core import moments, sharpe_diff_ci, sharpe_report
@@ -44,7 +45,7 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
     registry = registry or Registry()
     folds = fm.dev_folds()
     configs = [replace(r, rung=g) for r in rows for g in rungs]
-    results = [run_ladder(fm, cache, bars_dev, membership, c, registry) for c in configs]
+    results = [run_row_any(fm, cache, bars_dev, membership, c, registry) for c in configs]
     start, end = folds[0].dp, folds[-1].oos_end
     mat = aligned_daily([r.oos_trades for r in results], start, end)
     cal = pl.date_range(start, end, "1d", eager=True)

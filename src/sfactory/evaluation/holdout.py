@@ -20,7 +20,7 @@ import numpy as np
 import polars as pl
 
 from sfactory.evaluation.ablation import aligned_daily
-from sfactory.policy.ladder import run_ladder
+from sfactory.policy.ensemble import run_row_any
 from sfactory.portfolio.combine import combine_rows
 from sfactory.registry.repo import Registry
 
@@ -80,7 +80,7 @@ def run_holdout(fm, full_cache, bars_full, membership, catalog_report: dict, reg
     criteria = registry.open_holdout(data_version, phash)            # burns the holdout
     folds = dev_folds + fm.holdout_folds(unlock=True)
     all_cfgs = [r.config for r in catalog_report["results"]]
-    res = [run_ladder(fm, full_cache, bars_full, membership, c, folds=folds) for c in all_cfgs]
+    res = [run_row_any(fm, full_cache, bars_full, membership, c, folds=folds) for c in all_cfgs]
     start, end = folds[0].dp, folds[-1].oos_end
     mat_all = aligned_daily([r.oos_trades for r in res], start, end)
     mat = mat_all[:, accepted]

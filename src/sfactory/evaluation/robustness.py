@@ -15,7 +15,8 @@ from sfactory.data.adjust import add_adj_factor
 from sfactory.data.regime import market_up_series
 from sfactory.engine.cache import TradeCache, prepare_arrays
 from sfactory.metrics.core import daily_pnl
-from sfactory.policy.ladder import LadderConfig, run_ladder
+from sfactory.policy.ensemble import run_row_any
+from sfactory.policy.ladder import LadderConfig
 
 
 def _sr(x: np.ndarray) -> float:
@@ -50,16 +51,16 @@ def regime_breakdown(trades: pl.DataFrame, dates: np.ndarray, flags: np.ndarray)
 
 def run_robustness(fm, cache: TradeCache, bars_dev: pl.DataFrame, divs_dev: pl.DataFrame, membership,
                    cfg: LadderConfig, dd_limit: float = 0.35, noise_sd: float = 0.002, seed: int = 0) -> dict:
-    base = run_ladder(fm, cache, bars_dev, membership, cfg)
+    base = run_row_any(fm, cache, bars_dev, membership, cfg)
     b_daily = daily_pnl(base.oos_trades)
     exp0 = base.stats["expectancy"]
     out = {"base": {"sharpe": _sr(b_daily), "expectancy": exp0, "n": base.stats["n"]}}
     for f in (1.5, 2.0):
         c2 = TradeCache(cache.arrays, cache.data_version, cache.notional, cost_model=cache.cost_model.stressed(f))
         c2._regime_dates, c2._regime_flags, c2._regime_id = cache._regime_dates, cache._regime_flags, cache._regime_id
-        r = run_ladder(fm, c2, bars_dev, membership, cfg)
+        r = run_row_any(fm, c2, bars_dev, membership, cfg)
         out[f"cost_x{f:g}"] = {"sharpe": _sr(daily_pnl(r.oos_trades)), "expectancy": r.stats["expectancy"]}
-    rd = run_ladder(fm, cache, bars_dev, membership, replace(cfg, entry_delay=1))
+    rd = run_row_any(fm, cache, bars_dev, membership, replace(cfg, entry_delay=1))  # works for ensembles too
     out["delay_1bar"] = {"expectancy": rd.stats["expectancy"], "keep": rd.stats["expectancy"] / exp0 if exp0 > 0 else 0}
     rng = np.random.default_rng(seed)
     noisy = bars_dev.drop("adj_factor").with_columns(
@@ -72,7 +73,7 @@ def run_robustness(fm, cache: TradeCache, bars_dev: pl.DataFrame, divs_dev: pl.D
                     cost_model=cache.cost_model)
     if cache._regime_dates is not None:
         cn.set_market_regime(*market_up_series(noisy), cache._regime_id + "-noise")
-    rn = run_ladder(fm, cn, noisy, membership, cfg)
+    rn = run_row_any(fm, cn, noisy, membership, cfg)
     out["noise"] = {"sharpe": _sr(daily_pnl(rn.oos_trades))}
     out["mc_dd_p95"] = mc_drawdown_p95(b_daily, cfg.capital, seed=seed) if len(b_daily) > 40 else float("nan")
     d, fl = market_up_series(bars_dev)

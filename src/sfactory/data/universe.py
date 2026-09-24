@@ -18,3 +18,10 @@ def eligible_at(dp: date, bars: pl.DataFrame, membership: pl.DataFrame, min_pric
     ok = stats.filter((pl.col("n") >= min_history) & (pl.col("last_close") >= min_price) &
                       (pl.col("dv") >= min_dollar_vol))
     return sorted(ok["symbol"].to_list())
+
+
+def static_membership(bars: pl.DataFrame) -> pl.DataFrame:
+    """Membership for symbol-based universes without an index (FX, metals, CFD indices): each symbol is a
+    member from its first bar, with no end date. Eligibility still requires history before the DP."""
+    return (bars.group_by("symbol").agg(pl.col("date").min().alias("start"))
+            .with_columns(pl.lit(None, dtype=pl.Date).alias("end")).sort("symbol"))

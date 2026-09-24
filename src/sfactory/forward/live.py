@@ -38,13 +38,19 @@ def live_fold(fm: FoldManager, dp: date, index: int = -1) -> Fold:
 
 def decide_book(fm: FoldManager, cache, bars_hist: pl.DataFrame, membership: pl.DataFrame,
                 configs: list[LadderConfig], dp: date) -> dict[str, BookEntry]:
+    from sfactory.policy.ensemble import EnsembleConfig
     fold = live_fold(fm, dp)
     book = {}
-    for cfg in configs:
+    expanded = []
+    for c in configs:   # ensembles trade as their members, each with its own book entry
+        expanded.extend([(f"{c.rid}/{m.rid}", m) for m in c.expanded()] if isinstance(c, EnsembleConfig)
+                        else [(c.rid, c)])
+    for rid, cfg in expanded:
         elig = eligible_at(dp, bars_hist, membership, cfg.min_price, cfg.min_dollar_vol, min_history=cfg.min_history)
         view = _FoldView(fm, cache, cfg, fold, elig)
         thr, ex, chosen, d = decide_fold(view, cfg)
-        book[cfg.rid] = BookEntry(cfg.rid, cfg, thr, ex.id, cfg.structural + chosen, tuple(elig), d)
+        syms = tuple(d["symbols"]) if "symbols" in d else tuple(elig)
+        book[rid] = BookEntry(rid, cfg, thr, ex.id, cfg.structural + chosen, syms, d)
     return book
 
 
