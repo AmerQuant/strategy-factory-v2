@@ -1,0 +1,113 @@
+"""End-to-end research run on real data from the v1 store (StrategyFactory_data/store = SFAC_DATA_ROOT).
+
+    uv run python scripts/run_real.py --store D:/AmerAndish/Projects/Trade/StrategyFactory_data/store \
+        --out D:/AmerAndish/Projects/Trade/sf2_runs/run1 --registry D:/AmerAndish/Projects/Trade/sf2_runs/registry.duckdb
+
+load -> audit (critical symbols excluded) -> optional dividends / membership -> folds from the data span
+(holdout = last 20 %, >= 18 months) -> 18-row catalogue + 4 family ensembles -> screening + robustness ->
+combined policy -> [--open-holdout: the one-shot holdout] -> evidence.json + report.html.
+
+The registry file must be the same across runs: every run adds its trials there and DSR counts them all.
+Without --membership the universe is the top-N by trailing dollar volume at each DP (point-in-time).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import polars as pl
+
+from sfactory.costs.model import CostModel, load_cost_overrides
+from sfactory.data.adjust import add_adj_factor
+from sfactory.data.audit import audit_bars, audit_summary
+from sfactory.data.contracts import DIVIDENDS_SCHEMA
+from sfactory.data.folds_from_data import fold_config_for
+from sfactory.data.regime import market_up_series
+from sfactory.data.sfac_store import load_store
+from sfactory.engine.cache import TradeCache, prepare_arrays
+from sfactory.evaluation.catalog_runner import run_catalog
+from sfactory.evaluation.evidence import build_evidence, dumps
+from sfactory.evaluation.holdout import run_holdout
+from sfactory.policy.catalog import CATALOG_VERSION, MR_METHODS, TF_METHODS, ensemble_rows, equity_rows
+from sfactory.policy.ladder import LadderConfig
+from sfactory.registry.repo import Registry
+from sfactory.report.html import render_html
+from sfactory.timeline.folds import FoldManager
+
+
+def parse(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--store", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--registry", required=True, help="persistent DuckDB file shared by all runs")
+    ap.add_argument("--timeframe", default="1D")
+    ap.add_argument("--symbols", help="text file, one symbol per line (e.g. the broker's tradable list)")
+    ap.add_argument("--top-n", type=int, default=500)
+    ap.add_argument("--membership", help="parquet: symbol, start, end (point-in-time index membership)")
+    ap.add_argument("--dividends", help="parquet: symbol, ex_date, amount (split-only basis)")
+    ap.add_argument("--costs", default="moneta", help="'moneta' (share-CFD proxy), 'flat5', or a CSV path")
+    ap.add_argument("--methods", help="comma list to restrict the catalogue (default: all 9)")
+    ap.add_argument("--rung", default="A1")
+    ap.add_argument("--max-positions", type=int, default=10)
+    ap.add_argument("--max-new", type=int, default=3)
+    ap.add_argument("--no-ensembles", action="store_true")
+    ap.add_argument("--no-robustness", action="store_true")
+    ap.add_argument("--open-holdout", action="store_true", help="burns the holdout for this data version")
+    return ap.parse_args(argv)
+
+
+def main(argv=None) -> dict:
+    a = parse(argv)
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    symbols = [s.strip() for s in Path(a.symbols).read_text(encoding="utf-8").split() if s.strip()] if a.symbols else None
+    load = load_store(a.store, a.timeframe, symbols=symbols)
+    issues = audit_bars(load.bars)
+    audit = audit_summary(issues, len(load.symbols))
+    bars = load.bars.filter(~pl.col("symbol").is_in(audit["excluded_critical"]))
+    divs = (pl.read_parquet(a.dividends).select(list(DIVIDENDS_SCHEMA)) if a.dividends
+            else pl.DataFrame(schema=DIVIDENDS_SCHEMA))
+    mem = pl.read_parquet(a.membership) if a.membership else None
+    caveats = list(load.caveats) if not a.dividends else []
+    if mem is None:
+        caveats.append(f"no index membership file: universe = top {a.top_n} by trailing dollar volume at each DP")
+    bars = add_adj_factor(bars, divs)
+    fcfg = fold_config_for(bars["date"].min(), bars["date"].max())
+    fm = FoldManager(fcfg)
+    costs = (CostModel.moneta_share_cfd_proxy() if a.costs == "moneta" else CostModel.flat(5.0) if a.costs == "flat5"
+             else load_cost_overrides(a.costs, CostModel.moneta_share_cfd_proxy()))
+    dev, ddev = fm.dev_view(bars), fm.dev_view(divs, "ex_date")
+    cache = TradeCache(prepare_arrays(dev, ddev), load.version, cost_model=costs, cache_dir=out / "cache")
+    cache.set_market_regime(*market_up_series(dev), "eqw-ma200")
+    base = LadderConfig(rung=a.rung, max_positions=a.max_positions, max_new_per_day=a.max_new,
+                        universe_mode="membership" if mem is not None else "top_liquidity", universe_top_n=a.top_n)
+    rows = equity_rows(base)
+    if a.methods:
+        keep = set(a.methods.split(","))
+        assert keep <= set(MR_METHODS + TF_METHODS), keep
+        rows = [r for r in rows if r.method in keep]
+    rows = rows + ([] if a.no_ensembles else [replace(e, rung=a.rung) for e in ensemble_rows(rows)])
+    reg = Registry(a.registry)
+    cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev)
+    hold = None
+    if a.open_holdout:
+        full = TradeCache(prepare_arrays(bars, divs), load.version + "-full", cost_model=costs)
+        full.set_market_regime(*market_up_series(bars), "eqw-ma200")
+        hold = run_holdout(fm, full, bars, mem, cat, reg, load.version)
+    meta = {"data": load.version, "catalog": CATALOG_VERSION, "universe": base.universe_mode, "top_n": a.top_n,
+            "symbols_loaded": len(load.symbols), "symbols_skipped": load.skipped, "audit": audit,
+            "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()}}
+    pkg = build_evidence(cat, hold, meta)
+    (out / "evidence.json").write_text(dumps(pkg), encoding="utf-8")
+    (out / "report.html").write_text(render_html(pkg), encoding="utf-8")
+    issues.write_csv(out / "audit_issues.csv")
+    summary = {"accepted": [cat["table"][i]["row"] for i in cat["accepted"]], "trials": cat["n_trials"],
+               "combined_sharpe": cat["combined"]["sharpe"], "holdout": hold and hold["status"], "out": str(out)}
+    print(json.dumps(summary, ensure_ascii=False, indent=1))
+    return summary
+
+
+if __name__ == "__main__":
+    main()

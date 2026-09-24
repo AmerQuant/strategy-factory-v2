@@ -18,4 +18,6 @@ Source of truth: design doc v2.1 (Persian Word file held by the owner); engineer
 - Statistical code (DSR, PBO, SPA, FDR) must be checked against reference numeric examples.
 - Signal rules must be scale-invariant on the adjusted series (backward dividend adjustment rescales past levels); level rules use split-only prices.
 - Build the trade cache only from `FoldManager.dev_view(...)` data.
+- Research runs use ONE persistent registry file across runs (`--registry`); a fresh registry per run hides trials from DSR.
+- Real data comes from the v1 store read-only (`data/sfac_store.py`); never write into it.
 - When a mistake is found, add a line here.

@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 85 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 92 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -30,10 +30,11 @@
 - catalogue runner now applies the robustness gate, reports SPA and family ensembles; meta-grid runner; all in the evidence package (docs/spec/catalog.md)
 - symbol-based rows (S7 top-N by IS t-stat, random-N benchmark, FX row catalogue, static membership) and tradable ensemble rows with a row dispatcher (docs/spec/symbol_rows.md)
 - Persian RTL HTML report renderer, zero dependencies, inline SVG charts (docs/spec/report.md)
+- real-data path: v1 store adapter, data audit, top-liquidity point-in-time universe, swap/financing in CostModel + Moneta share-CFD proxy, folds from data span, `scripts/run_real.py`, Alpaca dividends fetcher (docs/spec/real_data.md)
 
 ## Next
-1. Real-data adapters (owner's data: bars, dividends, historical membership) + data audit (P1) — needs a sample of the owner's files
+1. First real run on the owner's machine: `scripts/run_real.py` on the v1 store (bars ready); then membership + dividends files when located (or `fetch_alpaca_dividends.py`)
 2. Add `uv sync --group crosscheck` to CI (needs a workflow edit by the owner)
 3. Broker bridge (P11): MT5 order/fill adapter, netting across rows, daily reconciliation, paper mode — needs the owner's machine
-4. FX swap/rollover costs in CostModel (needs the broker's swap table)
+4. Per-symbol Moneta costs: export v1 `configs/costs/moneta/moneta_profiles.yaml` to the v2 cost CSV (swap now modelled)
 5. Finding to revisit on real data: every MR row fails the 1-bar delay warning on synthetic data (short-horizon MR is delay-sensitive) — check on real bars before going live
