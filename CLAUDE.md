@@ -20,4 +20,6 @@ Source of truth: design doc v2.1 (Persian Word file held by the owner); engineer
 - Build the trade cache only from `FoldManager.dev_view(...)` data.
 - Research runs use ONE persistent registry file across runs (`--registry`); a fresh registry per run hides trials from DSR.
 - Real data comes from the v1 store read-only (`data/sfac_store.py`); never write into it.
+- The fast clock (edge activation, `policy/edge_state.py`) never changes parameters; parameters come only from `decide_fold`.
+- Intraday bars: `date` = naive Datetime bar start in the run clock; no bar may straddle midnight (`check_no_straddle`); DPs are dates; daily metrics aggregate exits per calendar day.
 - When a mistake is found, add a line here.
