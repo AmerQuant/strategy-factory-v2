@@ -94,7 +94,8 @@ def daily_orders(cache, book: dict[str, BookEntry], day: date, open_positions: d
             i = int(np.searchsorted(a.dates, np.datetime64(day)))
             if i >= len(a.dates) or a.dates[i] != np.datetime64(day):
                 continue
-            entry, score = entry_and_score(spec, a.sig_high[: i + 1], a.sig_low[: i + 1], a.sig_close[: i + 1])
+            entry, score = entry_and_score(spec, a.sig_high[: i + 1], a.sig_low[: i + 1], a.sig_close[: i + 1],
+                                           cache.ctx(sym).upto(i))
             ok = bool(entry[i])
             if ok and be.filters:
                 atr = atr_exec_units(a.sig_high[: i + 1], a.sig_low[: i + 1], a.sig_close[: i + 1], a.factor[: i + 1])

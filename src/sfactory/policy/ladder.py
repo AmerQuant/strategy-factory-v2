@@ -1,7 +1,8 @@
 """Row with the full in-fold ablation ladder (design 9.2): A0 fixed -> A1 entry -> A3 exit -> A4 filter.
 
 Any entry method (signals.methods: MR rsi/ibs/consec/lowest_close/donchian_low, TF ma_cross/donchian_break/
-supertrend/ichimoku), buy or sell. Grid, default value, exit library and neutral exit follow the method family.
+supertrend/ichimoku, and the diverse families VOL/XS/CAL/EV), buy or sell. Grid, default value, exit library and
+neutral exit follow the method (signals.specs.neutral_exit_for / exit_library_for).
 
 Per decision point, using IS trades only:
   A1  entry threshold by plateau-lite over the grid (neutral exit, no optional filter)
@@ -26,10 +27,10 @@ from sfactory.policy.rsi_row import select_threshold
 from sfactory.portfolio.capacity import simulate_capacity
 from sfactory.registry.repo import Registry
 from sfactory.signals.methods import DEFAULT, FAMILY, GRID, EntrySpec
-from sfactory.signals.specs import MR_FILTER_LIBRARY, ExitSpec, FilterSpec, exit_library, neutral_exit
+from sfactory.signals.specs import MR_FILTER_LIBRARY, ExitSpec, FilterSpec, exit_library_for, neutral_exit_for
 from sfactory.timeline.folds import FoldManager
 
-CODE_VERSION = "0.5.0"
+CODE_VERSION = "0.6.0"
 RUNG_LEVEL = {"A0": 0, "A1": 1, "A3": 3, "A4": 4}
 
 
@@ -41,7 +42,7 @@ class LadderConfig:
     row_id: str | None = None          # default: <family>-<METHOD>-<BUY|SELL>-EQ
     thresholds: tuple | None = None    # entry grid; default signals.methods.GRID[method]
     fixed_threshold: float | None = None
-    exits: tuple | None = None         # default: the family's exit library
+    exits: tuple | None = None         # default: the method's exit library
     filters: tuple = MR_FILTER_LIBRARY
     structural: tuple = ()
     min_is_trades: int = 30
@@ -86,11 +87,11 @@ class LadderConfig:
 
     @property
     def neutral(self) -> ExitSpec:
-        return neutral_exit(self.family)
+        return neutral_exit_for(self.method)
 
     @property
     def exit_lib(self) -> tuple:
-        return tuple(self.exits) if self.exits is not None else exit_library(self.family)
+        return tuple(self.exits) if self.exits is not None else exit_library_for(self.method)
 
     @property
     def rid(self) -> str:
