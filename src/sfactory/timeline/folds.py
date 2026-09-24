@@ -87,3 +87,26 @@ class FoldManager:
     @staticmethod
     def slice_oos(trades: pl.DataFrame, fold: Fold) -> pl.DataFrame:
         return trades.filter((pl.col("signal_date") >= fold.oos_start) & (pl.col("signal_date") < fold.oos_end))
+
+    # --- fast clock (design 12.5, "two clocks"): monthly sub-DPs inside a fold's OOS window ------------
+    @staticmethod
+    def sub_folds(fold: Fold, months: int = 1) -> list[Fold]:
+        """Sub-decision points every `months` inside [fold.oos_start, fold.oos_end). Parameters stay those of
+        `fold`; only activation / weights are re-decided at each sub-DP. Same index as the parent fold."""
+        out, dp = [], fold.oos_start
+        while dp < fold.oos_end:
+            nxt = min(add_months(dp, months), fold.oos_end)
+            out.append(Fold(fold.index, dp, fold.is_start, dp, nxt, fold.holdout))
+            dp = nxt
+        return out
+
+    @staticmethod
+    def slice_lookback(trades: pl.DataFrame, dp: date, months: int) -> pl.DataFrame:
+        """Trades fully closed before `dp` that entered within the last `months` months (short window)."""
+        start = add_months(dp, -months) if dp.day == 1 else add_months(dp, -months + 1)
+        return trades.filter((pl.col("entry_date") >= start) & (pl.col("exit_date") < dp))
+
+    @staticmethod
+    def slice_closed_before(trades: pl.DataFrame, dp: date) -> pl.DataFrame:
+        """Every trade fully closed before `dp` (shadow equity curve)."""
+        return trades.filter(pl.col("exit_date") < dp)

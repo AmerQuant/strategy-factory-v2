@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 92 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 104 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -31,10 +31,20 @@
 - symbol-based rows (S7 top-N by IS t-stat, random-N benchmark, FX row catalogue, static membership) and tradable ensemble rows with a row dispatcher (docs/spec/symbol_rows.md)
 - Persian RTL HTML report renderer, zero dependencies, inline SVG charts (docs/spec/report.md)
 - real-data path: v1 store adapter, data audit, top-liquidity point-in-time universe, swap/financing in CostModel + Moneta share-CFD proxy, folds from data span, `scripts/run_real.py`, Alpaca dividends fetcher (docs/spec/real_data.md)
+- package 1 (edge on/off, design 12.4-12.5): state-persistence test, two clocks (FoldManager.sub_folds), shadow equity-curve rule, causal trendiness features with in-fold calibration, soft weights; run_edge_state ablation vs `always` with persistence + paired bootstrap acceptance (docs/spec/edge_state.md)
 
-## Next
-1. First real run on the owner's machine: `scripts/run_real.py` on the v1 store (bars ready); then membership + dividends files when located (or `fetch_alpaca_dividends.py`)
+## Code roadmap (no owner machine needed; one or two packages per chat)
+1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
+2. Hourly timeframe in engine, folds and exits
+3. New edge families: cross-sectional momentum, calendar, volatility, gap; event rows (ex-div, index in/out) built, waiting for data
+4. Advanced sizing: vol targeting, per-row and portfolio risk caps
+5. Parallelism and speed for ~5,000 symbols (ADR-0004)
+6. MT5 bridge as far as possible: order/fill contract, netting across rows, daily reconciliation, paper mode with a simulated broker
+7. Moneta cost converter v1 → v2 CSV
+
+## Next on the owner's machine
+1. First real run: `scripts/run_real.py` on the v1 store (bars ready); then membership + dividends files when located (or `fetch_alpaca_dividends.py`)
 2. Add `uv sync --group crosscheck` to CI (needs a workflow edit by the owner)
-3. Broker bridge (P11): MT5 order/fill adapter, netting across rows, daily reconciliation, paper mode — needs the owner's machine
-4. Per-symbol Moneta costs: export v1 `configs/costs/moneta/moneta_profiles.yaml` to the v2 cost CSV (swap now modelled)
-5. Finding to revisit on real data: every MR row fails the 1-bar delay warning on synthetic data (short-horizon MR is delay-sensitive) — check on real bars before going live
+3. Broker bridge (P11) live connection test — needs the owner's machine
+4. Finding to revisit on real data: every MR row fails the 1-bar delay warning on synthetic data (short-horizon MR is delay-sensitive) — check on real bars before going live
+5. Run `run_edge_state` per accepted row on real data: the persistence verdict decides whether any mechanism is used
