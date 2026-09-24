@@ -1,4 +1,8 @@
-"""Point-in-time eligibility (stage S1). Uses only bars strictly before the decision point."""
+"""Point-in-time eligibility (stage S1). Uses only bars strictly before the decision point.
+
+Intraday bars are first aggregated to calendar days (last close, summed volume), so price, dollar-volume and
+history rules mean the same thing on every timeframe (min_history is in trading days).
+"""
 from __future__ import annotations
 
 from datetime import date
@@ -6,8 +10,17 @@ from datetime import date
 import polars as pl
 
 
+def daily_view(bars: pl.DataFrame) -> pl.DataFrame:
+    """Identity for daily bars; intraday -> one row per symbol and calendar day (close = last, volume = sum)."""
+    if not isinstance(bars.schema["date"], pl.Datetime):
+        return bars
+    return (bars.sort(["symbol", "date"]).group_by(["symbol", pl.col("date").cast(pl.Date)], maintain_order=True)
+            .agg(pl.col("close").last(), pl.col("volume").sum()))
+
+
 def eligible_at(dp: date, bars: pl.DataFrame, membership: pl.DataFrame, min_price: float = 5.0,
                 min_dollar_vol: float = 1e6, lookback: int = 20, min_history: int = 250) -> list[str]:
+    bars = daily_view(bars)
     members = membership.filter((pl.col("start") <= dp) & (pl.col("end").is_null() | (pl.col("end") > dp)))
     hist = bars.filter((pl.col("date") < dp) & pl.col("symbol").is_in(members["symbol"].to_list()))
     stats = (hist.sort("date").group_by("symbol").agg([
@@ -23,7 +36,7 @@ def eligible_at(dp: date, bars: pl.DataFrame, membership: pl.DataFrame, min_pric
 def static_membership(bars: pl.DataFrame) -> pl.DataFrame:
     """Membership for symbol-based universes without an index (FX, metals, CFD indices): each symbol is a
     member from its first bar, with no end date. Eligibility still requires history before the DP."""
-    return (bars.group_by("symbol").agg(pl.col("date").min().alias("start"))
+    return (daily_view(bars).group_by("symbol").agg(pl.col("date").min().alias("start"))
             .with_columns(pl.lit(None, dtype=pl.Date).alias("end")).sort("symbol"))
 
 
@@ -31,7 +44,7 @@ def eligible_top_liquidity(dp: date, bars: pl.DataFrame, top_n: int = 500, min_p
                            lookback: int = 60, min_history: int = 250) -> list[str]:
     """Point-in-time universe without an index file: the top-N symbols by trailing median dollar volume,
     from bars strictly before the DP. Survivorship-free as long as the bar data keeps delisted symbols."""
-    hist = bars.filter(pl.col("date") < dp)
+    hist = daily_view(bars).filter(pl.col("date") < dp)
     stats = (hist.sort("date").group_by("symbol").agg([
         pl.len().alias("n"),
         pl.col("close").last().alias("last_close"),

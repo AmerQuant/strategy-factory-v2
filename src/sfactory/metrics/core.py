@@ -1,4 +1,8 @@
-"""Single metric library (subset for the skeleton)."""
+"""Single metric library (subset for the skeleton).
+
+Trades may carry Date (daily bars) or Datetime (intraday bars) columns; equity statistics are always computed on
+realised pnl per calendar weekday, so daily and intraday rows are directly comparable (Sharpe x sqrt(252)).
+"""
 from __future__ import annotations
 
 import math
@@ -26,10 +30,10 @@ def daily_pnl(trades: pl.DataFrame) -> np.ndarray:
     """Realised pnl per weekday (by exit date) over the trades' span, zero-filled on days without exits."""
     if len(trades) == 0:
         return np.zeros(0)
-    start, end = trades["entry_date"].min(), trades["exit_date"].max()
+    start, end = trades["entry_date"].cast(pl.Date).min(), trades["exit_date"].cast(pl.Date).max()
     cal = pl.DataFrame({"exit_date": pl.date_range(start, end, "1d", eager=True)}).filter(
         pl.col("exit_date").dt.weekday() <= 5)
-    agg = trades.group_by("exit_date").agg(pl.col("net_pnl").sum())
+    agg = trades.group_by(pl.col("exit_date").cast(pl.Date)).agg(pl.col("net_pnl").sum())
     return cal.join(agg, on="exit_date", how="left").sort("exit_date")["net_pnl"].fill_null(0.0).to_numpy()
 
 

@@ -1,7 +1,7 @@
 """Deterministic synthetic market data for tests (random walk and mean-reverting variants)."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 import numpy as np
 import polars as pl
@@ -72,3 +72,35 @@ def make_market(n_symbols: int = 20, n_days: int = 2600, seed: int = 7, kind: st
     return (pl.concat(bars),
             pl.DataFrame(divs, schema={"symbol": pl.Utf8, "ex_date": pl.Date, "amount": pl.Float64}),
             pl.DataFrame(mem, schema={"symbol": pl.Utf8, "start": pl.Date, "end": pl.Date}))
+
+
+def _shrink(x: np.ndarray, base: float, scale: float) -> np.ndarray:
+    """Scale log-deviations from `base` (so every per-step log return is multiplied by `scale`)."""
+    return np.exp(base + (np.log(x) - base) * scale)
+
+
+def make_intraday_market(n_symbols: int = 12, n_days: int = 2600, bars_per_day: int = 7, first_hour: int = 14,
+                         seed: int = 7, kind: str = "random_walk", start: date = date(2010, 1, 4),
+                         mr_strength: float = 0.25, bar_vol_scale: float | None = None):
+    """Hourly bars (naive UTC Datetime = bar start), `bars_per_day` bars from `first_hour` on business days.
+
+    Built from `make_market` on n_days * bars_per_day steps (so the same kinds apply per bar), per-bar volatility
+    scaled by 1/sqrt(bars_per_day) unless `bar_vol_scale` is given. No dividends, every symbol listed throughout;
+    membership starts on the first day. Returns (bars, dividends, membership) like `make_market`.
+    """
+    n = n_days * bars_per_day
+    bars, divs, _ = make_market(n_symbols, n, seed=seed, kind=kind, start=start, mr_strength=mr_strength,
+                                dividends=False, listings=False)
+    days = business_days(start, n_days)
+    ts = [datetime.combine(d, time(first_hour)) + timedelta(hours=h) for d in days for h in range(bars_per_day)]
+    scale = bar_vol_scale if bar_vol_scale is not None else 1.0 / np.sqrt(bars_per_day)
+    out = []
+    for (sym,), g in bars.sort(["symbol", "date"]).partition_by("symbol", as_dict=True).items():
+        base = float(np.log(g["close"][0]))
+        o, h, lo_, c = (_shrink(g[k].to_numpy(), base, scale) for k in ("open", "high", "low", "close"))
+        out.append(pl.DataFrame({"symbol": sym, "date": ts, "open": o, "high": np.maximum.reduce([o, h, c]),
+                                 "low": np.minimum.reduce([o, lo_, c]), "close": c,
+                                 "volume": g["volume"].to_numpy() / bars_per_day}))
+    mem = pl.DataFrame({"symbol": sorted(bars["symbol"].unique().to_list()), "start": days[0], "end": None},
+                       schema={"symbol": pl.Utf8, "start": pl.Date, "end": pl.Date})
+    return pl.concat(out).with_columns(pl.col("date").cast(pl.Datetime("us"))), divs, mem

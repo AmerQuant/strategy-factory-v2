@@ -9,7 +9,8 @@ Reads the v1 layout exactly as written by v1 (``strategy_factory.data.store`` / 
 Only reference snapshots are read (one per symbol and timeframe), ``quality_status == critical``
 is skipped, and the price basis must be ``split`` (v1 D-021: split-adjusted only), which is
 exactly the v2 execution series. Daily bars are stamped at the session date 00:00 UTC, so the
-date is ``ts.date()``. The v1 store holds no dividends: v2 then runs with ``adj_factor = 1``
+date is ``ts.date()``. Intraday bars keep ``ts`` as a naive UTC Datetime (bar start), the v2 intraday
+convention (see data/resample.py). The v1 store holds no dividends: v2 then runs with ``adj_factor = 1``
 (signal series = split-only) and the evidence records that caveat.
 """
 from __future__ import annotations
@@ -44,6 +45,14 @@ class StoreLoad:
     version: str = ""                             # hash of the (symbol, snapshot_hash) pairs read
 
 
+def _time_expr(df: pl.DataFrame, timeframe: str) -> pl.Expr:
+    ts = pl.col("ts")
+    tz = getattr(df.schema["ts"], "time_zone", None)
+    if tz:
+        ts = ts.dt.convert_time_zone("UTC").dt.replace_time_zone(None)
+    return ts.dt.date() if timeframe == "1D" else ts.cast(pl.Datetime("us"))
+
+
 def load_store(root: str | Path, timeframe: str = "1D", asset_class: str = "us_equity",
                symbols: list[str] | None = None, require_adjustment: str = "split",
                allow_warning: bool = True) -> StoreLoad:
@@ -72,14 +81,14 @@ def load_store(root: str | Path, timeframe: str = "1D", asset_class: str = "us_e
             skipped[sym] = "snapshot file missing"
             continue
         df = pl.read_parquet(p, columns=["ts", "open", "high", "low", "close", "volume"])
-        date_expr = (pl.col("ts").dt.date() if timeframe == "1D" else pl.col("ts"))
-        out.append(df.select(pl.lit(sym).alias("symbol"), date_expr.alias("date"),
+        out.append(df.select(pl.lit(sym).alias("symbol"), _time_expr(df, timeframe).alias("date"),
                              *[pl.col(c).cast(pl.Float64) for c in ("open", "high", "low", "close", "volume")]))
         used.append(sym)
         keys.append(f"{sym}:{r['snapshot_hash']}")
     if missing := sorted(set(symbols or []) - set(used) - set(skipped)):
         skipped.update({s: "no reference snapshot" for s in missing})
-    bars = pl.concat(out) if out else pl.DataFrame(schema=BARS_SCHEMA)
+    empty = dict(BARS_SCHEMA) if timeframe == "1D" else {**BARS_SCHEMA, "date": pl.Datetime("us")}
+    bars = pl.concat(out) if out else pl.DataFrame(schema=empty)
     caveats = [("no dividend data in the v1 store: signal series = split-only (adj_factor = 1); "
                 "ex-dividend drops look like small down-moves to MR entries and dividends are not credited")]
     version = f"v1store-{timeframe}-" + hashlib.sha1("|".join(sorted(keys)).encode()).hexdigest()[:12]
