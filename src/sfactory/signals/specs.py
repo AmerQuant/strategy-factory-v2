@@ -1,7 +1,9 @@
 """Rule specifications (hashable, part of the trade-cache key) and their causal array builders.
 
 Exit libraries (design 7.4): MR - prev_high (neutral), time, rsi_above, optional ATR target / stop;
-TF - reverse (neutral, the method's opposite state), ATR trailing stop, time.
+TF - reverse (neutral, the method's opposite state), ATR trailing stop, time;
+BRK (breakouts without an opposite state, e.g. the volatility squeeze) - ATR trailing stop (neutral), time;
+HOLD (time-driven edges: cross-sectional momentum, calendar, events) - a fixed holding period per method.
 Filter library (design 7.5): above_ma, vol_below (ATR% percentile), and the structural `market_up`
 (market proxy above its MA; fixed, never selected in-fold - design ch. 12).
 """
@@ -52,6 +54,28 @@ TF_EXIT_LIBRARY = (
     ExitSpec("time", 40, 40),
 )
 
+NEUTRAL_BRK_EXIT = ExitSpec("none", 0, 250, trail_atr=3.0)
+
+BRK_EXIT_LIBRARY = (
+    NEUTRAL_BRK_EXIT,
+    ExitSpec("none", 0, 250, trail_atr=2.0),
+    ExitSpec("none", 0, 250, trail_atr=4.0),
+    ExitSpec("time", 20, 20),
+    ExitSpec("time", 40, 40, stop_atr=2.0),
+)
+
+
+def _hold(n: int) -> ExitSpec:
+    return ExitSpec("time", n, n)
+
+
+HOLD_EXIT_LIBRARY = (_hold(3), _hold(5), _hold(10), _hold(21), _hold(42))
+
+# exit style and neutral exit per entry method (methods absent here are MR / TF as before)
+EXIT_STYLE = {"vol_spike": "MR", "squeeze": "BRK", "xs_mom": "HOLD", "tom": "HOLD", "post_exdiv": "HOLD",
+              "index_add": "HOLD"}
+HOLD_NEUTRAL = {"xs_mom": _hold(21), "tom": _hold(5), "post_exdiv": _hold(5), "index_add": _hold(10)}
+
 
 def neutral_exit(family: str) -> ExitSpec:
     return NEUTRAL_MR_EXIT if family == "MR" else NEUTRAL_TF_EXIT
@@ -59,6 +83,22 @@ def neutral_exit(family: str) -> ExitSpec:
 
 def exit_library(family: str) -> tuple:
     return MR_EXIT_LIBRARY if family == "MR" else TF_EXIT_LIBRARY
+
+
+def neutral_exit_for(method: str) -> ExitSpec:
+    from sfactory.signals.methods import FAMILY
+    style = EXIT_STYLE.get(method, FAMILY[method])
+    if style == "HOLD":
+        return HOLD_NEUTRAL[method]
+    return NEUTRAL_BRK_EXIT if style == "BRK" else neutral_exit(style)
+
+
+def exit_library_for(method: str) -> tuple:
+    from sfactory.signals.methods import FAMILY
+    style = EXIT_STYLE.get(method, FAMILY[method])
+    if style == "HOLD":
+        return HOLD_EXIT_LIBRARY
+    return BRK_EXIT_LIBRARY if style == "BRK" else exit_library(style)
 
 
 @dataclass(frozen=True)

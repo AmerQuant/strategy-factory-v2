@@ -1,8 +1,12 @@
-"""Entry methods for rows (design 7.3): mean reversion and trend following, buy and sell (mirrored).
+"""Entry methods for rows (design 7.3, 13.2): mean reversion and trend following, buy and sell (mirrored), plus
+the diverse families of the edge taxonomy: volatility (VOL), cross-sectional momentum (XS), calendar (CAL) and
+events (EV).
 
-Every method returns (entry, score) arrays computed only from the adjusted signal series up to t.
-All rules are scale-invariant (ratios, relative highs/lows, homogeneous recursions), as required by the backward
-dividend adjustment. `score` feeds the daily ranker (lower = stronger signal).
+Every method returns (entry, score) arrays computed only from data up to t: the adjusted signal series and, for
+the families that need it, a `SeriesCtx` (bar dates, adjusted open, dividend and index-addition events at t).
+All price rules are scale-invariant (ratios, relative highs/lows, homogeneous recursions), as required by the
+backward dividend adjustment. `score` feeds the daily ranker (lower = stronger signal); for XS it IS the edge:
+with a capacity limit the ranker keeps the strongest cross-section of the day.
 TF methods also provide a `reverse_exit` state used as the neutral TF exit.
 """
 from __future__ import annotations
@@ -16,13 +20,16 @@ from sfactory.signals.indicators import (
     rolling_max_prev,
     rolling_mid,
     rolling_min_prev,
+    rolling_pct_rank,
     rsi_wilder,
     sma,
     supertrend_dir,
 )
 
 FAMILY = {"rsi": "MR", "ibs": "MR", "consec": "MR", "lowest_close": "MR", "donchian_low": "MR",
-          "ma_cross": "TF", "donchian_break": "TF", "supertrend": "TF", "ichimoku": "TF"}
+          "ma_cross": "TF", "donchian_break": "TF", "supertrend": "TF", "ichimoku": "TF",
+          "vol_spike": "VOL", "squeeze": "VOL", "xs_mom": "XS", "tom": "CAL", "post_exdiv": "EV",
+          "index_add": "EV"}
 
 GRID = {
     "rsi": (5.0, 10.0, 15.0, 20.0, 25.0),
@@ -34,9 +41,17 @@ GRID = {
     "donchian_break": (20.0, 40.0, 55.0, 80.0, 100.0),
     "supertrend": (1.5, 2.0, 2.5, 3.0, 4.0),
     "ichimoku": (0.5, 0.75, 1.0, 1.5, 2.0),   # scale of (9, 26, 52)
+    "vol_spike": (1.5, 2.0, 2.5, 3.0),        # true range / previous ATR(20)
+    "squeeze": (0.1, 0.15, 0.2, 0.25, 0.3),   # ATR% percentile (252 bars) of the previous bar
+    "xs_mom": (3.0, 6.0, 9.0, 12.0),          # formation months (skip the last month)
+    "tom": (1.0, 2.0, 3.0, 4.0),              # weekdays left in the month at the signal
+    "post_exdiv": (1.0,),                     # no parameter
+    "index_add": (1.0,),                      # no parameter
 }
 DEFAULT = {"rsi": 10.0, "ibs": 0.2, "consec": 3.0, "lowest_close": 5.0, "donchian_low": 10.0,
-           "ma_cross": 100.0, "donchian_break": 55.0, "supertrend": 3.0, "ichimoku": 1.0}
+           "ma_cross": 100.0, "donchian_break": 55.0, "supertrend": 3.0, "ichimoku": 1.0,
+           "vol_spike": 2.0, "squeeze": 0.2, "xs_mom": 12.0, "tom": 2.0, "post_exdiv": 1.0, "index_add": 1.0}
+NEEDS_CTX = {"xs_mom": "dates", "tom": "dates", "post_exdiv": "div", "index_add": "index_add"}
 
 
 @dataclass(frozen=True)
@@ -52,6 +67,21 @@ class EntrySpec:
     @property
     def family(self) -> str:
         return FAMILY[self.method]
+
+
+@dataclass(frozen=True)
+class SeriesCtx:
+    """Per-bar context for the families that need more than prices; every field is known at bar t."""
+    dates: np.ndarray | None = None       # bar dates (datetime64[D] or [us])
+    sig_open: np.ndarray | None = None    # adjusted open
+    div: np.ndarray | None = None         # dividend amount on the first bar of the ex-date
+    index_add: np.ndarray | None = None   # True on the first bar of an index membership spell
+
+    def upto(self, i: int) -> SeriesCtx:
+        """The context as known at bar i (for live decisions on a truncated history)."""
+        def cut(x):
+            return None if x is None else x[: i + 1]
+        return SeriesCtx(cut(self.dates), cut(self.sig_open), cut(self.div), cut(self.index_add))
 
 
 def _ret(c: np.ndarray, n: int) -> np.ndarray:
@@ -70,6 +100,12 @@ def _nan_false(x):
     return np.where(np.isnan(x), False, x).astype(np.bool_)
 
 
+def _prev(x: np.ndarray) -> np.ndarray:
+    out = np.full(len(x), np.nan)
+    out[1:] = x[:-1]
+    return out
+
+
 def _ichimoku_state(h, lo, c, scale: float):
     t, k, b = (max(2, round(9 * scale)), max(3, round(26 * scale)), max(4, round(52 * scale)))
     tenkan, kijun = rolling_mid(h, lo, t), rolling_mid(h, lo, k)
@@ -84,7 +120,21 @@ def _ichimoku_state(h, lo, c, scale: float):
     return tenkan, kijun, top, bot
 
 
-def entry_and_score(spec: EntrySpec, h, lo, c) -> tuple[np.ndarray, np.ndarray]:
+def weekdays_left_in_month(dates: np.ndarray) -> np.ndarray:
+    """Weekdays after the bar's day up to the month end (a fixed calendar, known in advance)."""
+    days = dates.astype("datetime64[D]")
+    nxt = (days.astype("datetime64[M]") + 1).astype("datetime64[D]")
+    return np.busday_count(days + 1, nxt)
+
+
+def _need(ctx: SeriesCtx | None, method: str):
+    field = NEEDS_CTX[method]
+    if ctx is None or getattr(ctx, field) is None:
+        raise ValueError(f"method {method} needs SeriesCtx.{field}")
+    return getattr(ctx, field)
+
+
+def entry_and_score(spec: EntrySpec, h, lo, c, ctx: SeriesCtx | None = None) -> tuple[np.ndarray, np.ndarray]:
     m, p, d = spec.method, spec.param, spec.direction
     buy = d == 1
     if m == "rsi":
@@ -127,6 +177,43 @@ def entry_and_score(spec: EntrySpec, h, lo, c) -> tuple[np.ndarray, np.ndarray]:
         tenkan, kijun, top, bot = _ichimoku_state(h, lo, c, p)
         cond = (c > top) & (tenkan > kijun) if buy else (c < bot) & (tenkan < kijun)
         return _events(_nan_false(np.where(np.isnan(top), np.nan, cond))), -d * _ret(c, 20)
+    # --- volatility (VOL) ---
+    if m == "vol_spike":            # fade a range-expansion bar that closes at its extreme against the move
+        pc = _prev(c)
+        tr = np.fmax(h - lo, np.fmax(np.abs(h - pc), np.abs(lo - pc)))
+        ratio = tr / _prev(atr_wilder(h, lo, c, 20))
+        rng = h - lo
+        ibs = np.where(rng > 0, (c - lo) / np.where(rng > 0, rng, 1), 0.5)
+        side = (ibs < 0.3) & (c < pc) if buy else (ibs > 0.7) & (c > pc)
+        return _nan_false(np.where(np.isnan(ratio), np.nan, (ratio >= p) & side)), -np.nan_to_num(ratio)
+    if m == "squeeze":              # breakout out of a volatility contraction
+        pr = _prev(rolling_pct_rank(atr_wilder(h, lo, c, 14) / c, 252))
+        ref = rolling_max_prev(h, 20) if buy else rolling_min_prev(lo, 20)
+        brk = (c > ref) if buy else (c < ref)
+        state = _nan_false(np.where(np.isnan(pr) | np.isnan(ref), np.nan, (pr <= p) & brk))
+        return _events(state), -d * _ret(c, 20)
+    # --- cross-sectional momentum (XS): rebalance on the first bar of each month ---
+    if m == "xs_mom":
+        dates = _need(ctx, m)
+        mon = dates.astype("datetime64[M]")
+        first = np.zeros(len(c), dtype=np.bool_)
+        first[1:] = mon[1:] != mon[:-1]
+        look, skip = int(p) * 21, 21
+        mom = np.full(len(c), np.nan)
+        if len(c) > look:
+            mom[look:] = c[look - skip:len(c) - skip] / c[:len(c) - look] - 1
+        return first & ~np.isnan(mom), -d * np.nan_to_num(mom)
+    # --- calendar (CAL): turn of the month ---
+    if m == "tom":
+        left = weekdays_left_in_month(_need(ctx, m))
+        return _events(left == int(p)), d * np.nan_to_num(_ret(c, 5))
+    # --- events (EV) ---
+    if m == "post_exdiv":           # the ex-date drop is mechanical, the reaction around it is not
+        div = _need(ctx, m)
+        return div > 0, -np.where(c > 0, div / np.where(c > 0, c, 1), 0.0)
+    if m == "index_add":
+        add = _need(ctx, m).astype(np.bool_)
+        return add.copy(), d * np.nan_to_num(_ret(c, 5))
     raise ValueError(m)
 
 
