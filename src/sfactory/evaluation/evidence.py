@@ -25,6 +25,13 @@ def _clean(x):
     return x if isinstance(x, (int, str)) or x is None else str(x)
 
 
+def _weekly_curve(dates, daily_a, daily_b, step: int = 5) -> dict:
+    ca, cb = np.cumsum(daily_a), np.cumsum(daily_b)
+    idx = list(range(0, len(dates), step)) + ([len(dates) - 1] if len(dates) % step != 1 else [])
+    return {"dates": [str(dates[i])[:10] for i in idx], "combined": [float(ca[i]) for i in idx],
+            "benchmark": [float(cb[i]) for i in idx]}
+
+
 def build_evidence(catalog_report: dict, holdout_report: dict | None, meta: dict) -> dict:
     accepted = catalog_report["accepted"]
     rows = []
@@ -40,6 +47,8 @@ def build_evidence(catalog_report: dict, holdout_report: dict | None, meta: dict
         "combined_dev": catalog_report["combined"],
         "benchmark_all_rows_equal_dev": catalog_report["benchmark_all_equal"],
         "effective_n_all_rows": catalog_report["effective_n_all"],
+        "dev_curve": _weekly_curve(catalog_report["dates"], catalog_report["combined_daily"],
+                                   catalog_report["benchmark_daily"]) if "combined_daily" in catalog_report else None,
         "robustness_of_accepted_rows": catalog_report.get("robustness"),
         "spa_any_vs_cash": catalog_report.get("spa_any_vs_cash"),
         "spa_combined_vs_all_equal": catalog_report.get("spa_combined_vs_all_equal"),

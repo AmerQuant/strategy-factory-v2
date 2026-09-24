@@ -113,4 +113,5 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
         "benchmark_all_equal": _sharpe_ann(all_eq),
         "effective_n_all": effective_n(mat),
         "daily": mat, "dates": dates, "results": results,
+        "combined_daily": combined.daily if combined else np.zeros(len(dates)), "benchmark_daily": all_eq,
     }

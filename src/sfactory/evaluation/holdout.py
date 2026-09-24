@@ -97,6 +97,8 @@ def run_holdout(fm, full_cache, bars_full, membership, catalog_report: dict, reg
     if criteria["beat_benchmark"]:
         checks["benchmark"] = out["sharpe"] > out["benchmark_sharpe"]
     result = {"status": "pass" if all(checks.values()) else "fail", "checks": checks, "criteria": criteria,
-              "holdout": out, "policy_hash": phash, "policy": spec}
+              "holdout": out, "policy_hash": phash, "policy": spec,
+              "curve": {"dates": [str(d)[:10] for d in dates[h0:]], "combined": np.cumsum(hold).tolist(),
+                        "benchmark": np.cumsum(bench).tolist()}}
     registry.record_holdout_result(data_version, result)
     return result
