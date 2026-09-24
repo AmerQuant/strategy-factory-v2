@@ -152,11 +152,12 @@ class _FoldView:
 
 
 def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membership: pl.DataFrame,
-               cfg: LadderConfig, registry: Registry | None = None) -> LadderResult:
+               cfg: LadderConfig, registry: Registry | None = None, folds: list | None = None) -> LadderResult:
+    """`folds` defaults to the dev folds; only the holdout stage passes dev + unlocked holdout folds."""
     res = LadderResult(cfg)
     oos = []
     lvl = cfg.level
-    for fold in fm.dev_folds():
+    for fold in (folds if folds is not None else fm.dev_folds()):
         elig = eligible_at(fold.dp, bars_dev, membership, cfg.min_price, cfg.min_dollar_vol,
                            min_history=cfg.min_history)
         view = _FoldView(fm, cache, cfg, fold, elig)
