@@ -1,2 +1,12 @@
-# strategy-factory-v2
-WF-native strategy discovery, validation and execution platform (design v2.1)
+<div dir="rtl">
+
+# پلتفرم تولید و اعتبارسنجی استراتژی — معماری Walk-Forward Native
+
+پلتفرم داخلی برای کشف، اعتبارسنجی، ترکیب و اجرای استراتژی‌های الگوریتمی که از پایه بر والک‌فوروارد بنا شده است.
+
+- طرح کامل: سند Word نسخه‌ی ۲.۱ (نزد مالک محصول)؛ مشخصات مهندسی هر ماژول در `docs/spec/`
+- تصمیمات فنی: [`docs/adr/`](docs/adr/)
+- وضعیت پیشرفت: [`docs/PROGRESS.md`](docs/PROGRESS.md)
+- قواعد کار برای Claude: [`CLAUDE.md`](CLAUDE.md)
+
+</div>
