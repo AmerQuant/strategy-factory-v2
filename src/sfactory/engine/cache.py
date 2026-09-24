@@ -3,6 +3,7 @@
 Works for daily bars (`date` is a Date) and intraday bars (`date` is a naive Datetime = bar start): the engine is
 bar-index based, trade timestamps keep the bar dtype, dividends are credited on the first bar of the ex-date and
 swap is charged per calendar-day boundary crossed (the rollover of the run's clock).
+Methods that need more than prices get a `SeriesCtx` (dates, adjusted open, dividends, index-addition events).
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from sfactory.data.adjust import bar_days
 from sfactory.engine.cell import run_cell
 from sfactory.engine.generic import run_cell_generic
 from sfactory.signals.indicators import rsi_wilder
-from sfactory.signals.methods import EntrySpec, entry_and_score, reverse_exit
+from sfactory.signals.methods import EntrySpec, SeriesCtx, entry_and_score, reverse_exit
 from sfactory.signals.specs import (
     NEUTRAL_MR_EXIT,
     ExitSpec,
@@ -78,6 +79,27 @@ class TradeCache:
         self._regime_dates: np.ndarray | None = None
         self._regime_flags: np.ndarray | None = None
         self._regime_id = "none"
+        self._index_add: dict[str, np.ndarray] = {}
+        self._events_id = "none"
+
+    def set_index_events(self, membership: pl.DataFrame, events_id: str = "membership") -> None:
+        """Index-addition events (EV rows): True on the first bar on/after each membership start that is later
+        than the symbol's first bar (a genuine addition, not the start of the data). Known at that bar."""
+        self._index_add = {}
+        for sym, a in self.arrays.items():
+            flags = np.zeros(len(a.dates), dtype=np.bool_)
+            days = bar_days(a.dates)
+            for st in membership.filter(pl.col("symbol") == sym)["start"].to_numpy():
+                i = int(np.searchsorted(days, st))
+                if 0 < i < len(days):
+                    flags[i] = True
+            self._index_add[sym] = flags
+        self._events_id = events_id
+
+    def ctx(self, symbol: str) -> SeriesCtx:
+        """Per-bar context for methods that need dates, the adjusted open or events."""
+        a = self.arrays[symbol]
+        return SeriesCtx(a.dates, a.ex_open * a.factor, a.div, self._index_add.get(symbol))
 
     def set_market_regime(self, dates: np.ndarray, flags: np.ndarray, regime_id: str) -> None:
         """Causal market regime series (e.g. market proxy above its MA) used by structural filters."""
@@ -143,11 +165,13 @@ class TradeCache:
         needs_regime = any(f.kind == "market_up" for f in filters)
         key = ("tr", symbol, entry_spec.id, exit_spec.id, fkey,
                self._regime_id if needs_regime else "-", self.data_version, self.cost_model.fingerprint(), delay)
+        if entry_spec.method == "index_add":
+            key = key + (self._events_id,)
 
         def compute():
             a = self.arrays[symbol]
             d = entry_spec.direction
-            entry, score = entry_and_score(entry_spec, a.sig_high, a.sig_low, a.sig_close)
+            entry, score = entry_and_score(entry_spec, a.sig_high, a.sig_low, a.sig_close, self.ctx(symbol))
             atr = atr_exec_units(a.sig_high, a.sig_low, a.sig_close, a.factor)
             for f in filters:
                 entry = entry & filter_mask(f, a.sig_close, atr, a.ex_close, self._regime_for(a.dates), d)
