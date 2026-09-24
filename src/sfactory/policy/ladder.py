@@ -151,62 +151,70 @@ class _FoldView:
         return _concat([self.fm.slice_oos(t, self.fold) for t in self.trades(thr, ex, fl)])
 
 
+def decide_fold(view: _FoldView, cfg: LadderConfig) -> tuple[float, ExitSpec, tuple, dict]:
+    """The in-fold selector for one decision point (IS only). Shared by research, holdout and live DPs."""
+    fold = view.fold
+    is_df = view.is_df
+    lvl = cfg.level
+    d = {"fold": fold.index, "dp": str(fold.dp), "n_eligible": len(view.elig)}
+    # A1: entry threshold
+    grid, neutral = cfg.grid, cfg.neutral
+    thr = cfg.fixed
+    if lvl >= 1:
+        scores = [_t(is_df(x, neutral), cfg.min_is_trades) for x in grid]
+        thr = grid[select_threshold(scores)]
+        d["entry_scores"] = [None if np.isnan(v) else round(float(v), 4) for v in scores]
+    d["threshold"] = thr
+    # A3: exit
+    ex = neutral
+    if lvl >= 3:
+        t0 = _t(is_df(thr, neutral), cfg.min_is_trades)
+        cand = [(e, _t(is_df(thr, e), cfg.min_is_trades)) for e in cfg.exit_lib if e != neutral]
+        cand = [(e, v) for e, v in cand if not np.isnan(v)]
+        if cand and not np.isnan(t0):
+            best, tb = max(cand, key=lambda c: c[1])
+            i = grid.index(thr)
+            nbs = [grid[j] for j in (i - 1, i + 1) if 0 <= j < len(grid)]
+            plateau_ok = tb > 0 and all(
+                _t(is_df(nb, best), cfg.min_is_trades) >= cfg.plateau_ratio * tb for nb in nbs)
+            d["exit_candidate"] = best.id
+            d["exit_plateau_ok"] = bool(plateau_ok)
+            if tb > t0 + cfg.exit_margin and plateau_ok:
+                ex = best
+    d["exit"] = ex.id
+    # A4: at most one optional filter
+    chosen: tuple = ()
+    if lvl >= 4:
+        base = is_df(thr, ex)
+        tb = _t(base, cfg.min_is_trades)
+        passing = []
+        for f in cfg.filters:
+            df_f = is_df(thr, ex, (f,))
+            tf = _t(df_f, cfg.min_is_trades)
+            if np.isnan(tf) or np.isnan(tb) or len(base) == 0:
+                continue
+            keep = len(df_f) / len(base)
+            yrs = years_improved(base, df_f)
+            rr = random_removal_pct(base["net_pnl"].to_numpy(), len(df_f), tf, cfg.n_rand,
+                                    seed=fold.dp.toordinal())  # same seed in research, holdout and live
+            if tf > tb and keep >= cfg.filter_min_keep and yrs > 0.5 and rr >= cfg.filter_rand_pct:
+                passing.append((f, tf))
+        if passing:
+            chosen = (max(passing, key=lambda c: c[1])[0],)
+    d["filters"] = [f.id for f in cfg.structural + chosen]
+    return thr, ex, chosen, d
+
+
 def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membership: pl.DataFrame,
                cfg: LadderConfig, registry: Registry | None = None, folds: list | None = None) -> LadderResult:
     """`folds` defaults to the dev folds; only the holdout stage passes dev + unlocked holdout folds."""
     res = LadderResult(cfg)
     oos = []
-    lvl = cfg.level
     for fold in (folds if folds is not None else fm.dev_folds()):
         elig = eligible_at(fold.dp, bars_dev, membership, cfg.min_price, cfg.min_dollar_vol,
                            min_history=cfg.min_history)
         view = _FoldView(fm, cache, cfg, fold, elig)
-        is_df = view.is_df
-        d = {"fold": fold.index, "dp": str(fold.dp), "n_eligible": len(elig)}
-        # A1: entry threshold
-        grid, neutral = cfg.grid, cfg.neutral
-        thr = cfg.fixed
-        if lvl >= 1:
-            scores = [_t(is_df(x, neutral), cfg.min_is_trades) for x in grid]
-            thr = grid[select_threshold(scores)]
-            d["entry_scores"] = [None if np.isnan(v) else round(float(v), 4) for v in scores]
-        d["threshold"] = thr
-        # A3: exit
-        ex = neutral
-        if lvl >= 3:
-            t0 = _t(is_df(thr, neutral), cfg.min_is_trades)
-            cand = [(e, _t(is_df(thr, e), cfg.min_is_trades)) for e in cfg.exit_lib if e != neutral]
-            cand = [(e, v) for e, v in cand if not np.isnan(v)]
-            if cand and not np.isnan(t0):
-                best, tb = max(cand, key=lambda c: c[1])
-                i = grid.index(thr)
-                nbs = [grid[j] for j in (i - 1, i + 1) if 0 <= j < len(grid)]
-                plateau_ok = tb > 0 and all(
-                    _t(is_df(nb, best), cfg.min_is_trades) >= cfg.plateau_ratio * tb for nb in nbs)
-                d["exit_candidate"] = best.id
-                d["exit_plateau_ok"] = bool(plateau_ok)
-                if tb > t0 + cfg.exit_margin and plateau_ok:
-                    ex = best
-        d["exit"] = ex.id
-        # A4: at most one optional filter
-        chosen: tuple = ()
-        if lvl >= 4:
-            base = is_df(thr, ex)
-            tb = _t(base, cfg.min_is_trades)
-            passing = []
-            for f in cfg.filters:
-                df_f = is_df(thr, ex, (f,))
-                tf = _t(df_f, cfg.min_is_trades)
-                if np.isnan(tf) or np.isnan(tb) or len(base) == 0:
-                    continue
-                keep = len(df_f) / len(base)
-                yrs = years_improved(base, df_f)
-                rr = random_removal_pct(base["net_pnl"].to_numpy(), len(df_f), tf, cfg.n_rand, seed=fold.index)
-                if tf > tb and keep >= cfg.filter_min_keep and yrs > 0.5 and rr >= cfg.filter_rand_pct:
-                    passing.append((f, tf))
-            if passing:
-                chosen = (max(passing, key=lambda c: c[1])[0],)
-        d["filters"] = [f.id for f in cfg.structural + chosen]
+        thr, ex, chosen, d = decide_fold(view, cfg)
         res.decisions.append(d)
         f_oos = view.oos_df(thr, ex, chosen)
         if len(f_oos):
