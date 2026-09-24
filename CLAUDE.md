@@ -16,4 +16,6 @@ Source of truth: design doc v2.1 (Persian Word file held by the owner); engineer
 - Plan before editing; small diffs; tests first.
 - Every selector stage must pass the future-perturbation test (perturb data after t ⇒ decisions at DPs ≤ t unchanged).
 - Statistical code (DSR, PBO, SPA, FDR) must be checked against reference numeric examples.
+- Signal rules must be scale-invariant on the adjusted series (backward dividend adjustment rescales past levels); level rules use split-only prices.
+- Build the trade cache only from `FoldManager.dev_view(...)` data.
 - When a mistake is found, add a line here.
