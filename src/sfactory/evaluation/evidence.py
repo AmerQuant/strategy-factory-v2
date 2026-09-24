@@ -40,6 +40,11 @@ def build_evidence(catalog_report: dict, holdout_report: dict | None, meta: dict
         "combined_dev": catalog_report["combined"],
         "benchmark_all_rows_equal_dev": catalog_report["benchmark_all_equal"],
         "effective_n_all_rows": catalog_report["effective_n_all"],
+        "robustness_of_accepted_rows": catalog_report.get("robustness"),
+        "spa_any_vs_cash": catalog_report.get("spa_any_vs_cash"),
+        "spa_combined_vs_all_equal": catalog_report.get("spa_combined_vs_all_equal"),
+        "family_ensembles": catalog_report.get("ensembles"),
+        "meta_grid": meta.get("meta_grid"),
         "holdout": holdout_report,
     }
     return _clean(pkg)

@@ -15,3 +15,9 @@ Code: `evaluation/catalog_runner.py`, `portfolio/combine.py`, `stats/core.sharpe
 | mean-reverting | 10 (all MR) | 10 MR, standalone | 8.26 | 6.3 | 5.57 |
 | trending | 8 (all TF) | 7 TF, standalone | 2.59 | 6.4 | 1.06 |
 | random walk | 0 | 0 | — | — | −1.40 |
+
+## Added: robustness gate, SPA, family ensembles, meta-grid
+- **Robustness gate**: with `divs_dev` given, every accepted row runs the robustness suite (docs/spec/robustness.md); a mandatory failure removes it (`path = …-rejected_by_robustness`); warnings go into the evidence package.
+- **SPA** (reported): all configurations vs cash, and the combined policy vs the all-rows equal weight.
+- **Family ensembles** (design 13.3, reported): equal-weight of every family × direction vs its best member. On synthetic data the ensemble beats the best single member in every profitable group (mean-reverting: MR-BUY 6.85 vs 5.53, MR-SELL 6.72 vs 5.05; trending: TF-BUY 2.72 vs 1.84, TF-SELL 2.09 vs 1.62) — picking one member is only allowed when it beats the ensemble OOS.
+- **Meta-grid** (`evaluation/meta_grid.py`): pre-registered IS length × window type × capacity; every setting's rows are registry trials; report = combined Sharpe per setting, share of settings beating the benchmark, PBO across settings. Never used to pick the maximum.

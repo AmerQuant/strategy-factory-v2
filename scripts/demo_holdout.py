@@ -30,7 +30,7 @@ def main(kind: str = "mean_revert") -> dict:
     dev_cache = TradeCache(prepare_arrays(dev, fm.dev_view(divs, "ex_date")), dv)
     reg = Registry()
     cat = run_catalog(fm, dev_cache, dev, mem, equity_rows(LadderConfig(max_positions=10, max_new_per_day=3)),
-                      registry=reg)
+                      registry=reg, divs_dev=fm.dev_view(divs, "ex_date"))
     full_cache = TradeCache(prepare_arrays(bars, divs), dv + "-full")   # the only place the lock is lifted
     hold = run_holdout(fm, full_cache, bars, mem, cat, reg, dv)
     return build_evidence(cat, hold, {"data": dv, "catalog": CATALOG_VERSION, "universe": "synthetic 30"})
