@@ -14,7 +14,7 @@ from datetime import date
 import numpy as np
 import polars as pl
 
-from sfactory.data.universe import eligible_at
+from sfactory.data.universe import universe_at
 from sfactory.policy.ladder import LadderConfig, _FoldView, decide_fold
 from sfactory.signals.methods import EntrySpec, entry_and_score
 from sfactory.signals.specs import atr_exec_units, filter_mask
@@ -46,7 +46,7 @@ def decide_book(fm: FoldManager, cache, bars_hist: pl.DataFrame, membership: pl.
         expanded.extend([(f"{c.rid}/{m.rid}", m) for m in c.expanded()] if isinstance(c, EnsembleConfig)
                         else [(c.rid, c)])
     for rid, cfg in expanded:
-        elig = eligible_at(dp, bars_hist, membership, cfg.min_price, cfg.min_dollar_vol, min_history=cfg.min_history)
+        elig = universe_at(cfg, dp, bars_hist, membership)
         view = _FoldView(fm, cache, cfg, fold, elig)
         thr, ex, chosen, d = decide_fold(view, cfg)
         syms = tuple(d["symbols"]) if "symbols" in d else tuple(elig)

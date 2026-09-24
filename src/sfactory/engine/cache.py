@@ -154,9 +154,20 @@ class TradeCache:
             rec = run_cell_generic(entry.astype(np.bool_), ex.astype(np.bool_), a.ex_open, a.ex_close, a.div,
                                    atr, d, exit_spec.max_hold, exit_spec.target_atr, exit_spec.stop_atr,
                                    self.notional, self.cost_model.per_side_bps(symbol), exit_spec.trail_atr)
-            return _to_frame(symbol, a.dates, rec, score)
+            return self._with_financing(_to_frame(symbol, a.dates, rec, score), symbol, d)
 
         return self._get(key, compute)
+
+
+    def _with_financing(self, df: pl.DataFrame, symbol: str, direction: int) -> pl.DataFrame:
+        """Overnight financing (swap): notional x rate / day_count x calendar days held; added to net pnl."""
+        rate = self.cost_model.swap_pct(symbol, direction)
+        if rate == 0 or len(df) == 0:
+            return df.with_columns(pl.lit(0.0).alias("financing"))
+        fin = (pl.col("shares") * pl.col("entry_px") * (rate / 100 / self.cost_model.day_count)
+               * (pl.col("exit_date") - pl.col("entry_date")).dt.total_days())
+        return df.with_columns(fin.alias("financing")).with_columns((pl.col("net_pnl") + pl.col("financing"))
+                                                                   .alias("net_pnl"))
 
 
 def _to_frame(symbol: str, dates: np.ndarray, rec: np.ndarray, score: np.ndarray) -> pl.DataFrame:

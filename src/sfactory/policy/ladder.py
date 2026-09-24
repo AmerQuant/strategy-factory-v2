@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 import polars as pl
 
-from sfactory.data.universe import eligible_at
+from sfactory.data.universe import universe_at
 from sfactory.engine.cache import TradeCache
 from sfactory.metrics.core import equity_stats, trade_stats
 from sfactory.policy.rsi_row import select_threshold
@@ -65,6 +65,8 @@ class LadderConfig:
     symbol_ranker: str = "is_tstat"    # is_tstat | random (benchmark only)
     symbol_seed: int = 0
     asset_class: str = "equities"
+    universe_mode: str = "membership"  # membership | top_liquidity (no index file available)
+    universe_top_n: int = 500
 
     @property
     def level(self) -> int:
@@ -248,8 +250,7 @@ def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membe
     res = LadderResult(cfg)
     oos = []
     for fold in (folds if folds is not None else fm.dev_folds()):
-        elig = eligible_at(fold.dp, bars_dev, membership, cfg.min_price, cfg.min_dollar_vol,
-                           min_history=cfg.min_history)
+        elig = universe_at(cfg, fold.dp, bars_dev, membership)
         view = _FoldView(fm, cache, cfg, fold, elig)
         thr, ex, chosen, d = decide_fold(view, cfg)
         res.decisions.append(d)

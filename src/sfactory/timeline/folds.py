@@ -16,6 +16,7 @@ class HoldoutLockedError(RuntimeError):
 
 
 def add_months(d: date, m: int) -> date:
+    """First day of the month `m` months after `d`'s month (m may be negative)."""
     y, mo = divmod(d.month - 1 + m, 12)
     return date(d.year + y, mo + 1, 1)
 

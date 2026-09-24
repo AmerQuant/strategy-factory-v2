@@ -75,7 +75,8 @@ def run_ensemble(fm, cache, bars_dev, membership, cfg: EnsembleConfig, registry:
         t = r.oos_trades
         if len(t):
             if m.max_positions <= 0:          # cell mode: split notional equally
-                t = t.with_columns([(pl.col(c) / k) for c in ("gross_pnl", "cost", "dividends", "net_pnl")])
+                t = t.with_columns([(pl.col(c) / k) for c in ("gross_pnl", "cost", "dividends", "financing", "net_pnl")
+                                    if c in t.columns])
             frames.append(t.with_columns(pl.lit(m.rid).alias("member")))
     res.oos_trades = pl.concat(frames, how="diagonal") if frames else pl.DataFrame()
     res.stats = {**trade_stats(res.oos_trades), **equity_stats(res.oos_trades)}

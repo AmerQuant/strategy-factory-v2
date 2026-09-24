@@ -55,7 +55,7 @@ def simulate_capacity(cands: pl.DataFrame, max_positions: int, max_new_per_day: 
         i = j
     scale = (capital / max_positions) / cache_notional
     out = df.filter(pl.Series(keep)).drop("_r")
-    cols = [c for c in ("gross_pnl", "cost", "dividends", "net_pnl", "shares") if c in out.columns]
+    cols = [c for c in ("gross_pnl", "cost", "dividends", "financing", "net_pnl", "shares") if c in out.columns]
     return out.with_columns([(pl.col(c) * scale) for c in cols])
 
 
