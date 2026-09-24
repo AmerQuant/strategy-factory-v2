@@ -10,7 +10,16 @@ import polars as pl
 
 from sfactory.costs.model import CostModel
 from sfactory.engine.cell import run_cell
+from sfactory.engine.generic import run_cell_generic
 from sfactory.signals.indicators import rsi_wilder
+from sfactory.signals.specs import (
+    NEUTRAL_MR_EXIT,
+    ExitSpec,
+    FilterSpec,
+    atr_exec_units,
+    exit_signal,
+    filter_mask,
+)
 
 
 @dataclass
@@ -22,6 +31,8 @@ class SymbolArrays:
     ex_open: np.ndarray
     ex_close: np.ndarray
     div: np.ndarray
+    sig_low: np.ndarray | None = None
+    factor: np.ndarray | None = None
 
 
 def prepare_arrays(bars: pl.DataFrame, dividends: pl.DataFrame) -> dict[str, SymbolArrays]:
@@ -37,7 +48,8 @@ def prepare_arrays(bars: pl.DataFrame, dividends: pl.DataFrame) -> dict[str, Sym
             if i < len(dates) and dates[i] == ex:
                 div[i] = amt
         out[sym] = SymbolArrays(sym, dates, g["close"].to_numpy() * f, g["high"].to_numpy() * f,
-                                g["open"].to_numpy(), g["close"].to_numpy(), div)
+                                g["open"].to_numpy(), g["close"].to_numpy(), div,
+                                g["low"].to_numpy() * f, f)
     return out
 
 
@@ -55,6 +67,22 @@ class TradeCache:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._regime_dates: np.ndarray | None = None
+        self._regime_flags: np.ndarray | None = None
+        self._regime_id = "none"
+
+    def set_market_regime(self, dates: np.ndarray, flags: np.ndarray, regime_id: str) -> None:
+        """Causal market regime series (e.g. market proxy above its MA) used by structural filters."""
+        order = np.argsort(dates)
+        self._regime_dates, self._regime_flags = np.asarray(dates)[order], np.asarray(flags, bool)[order]
+        self._regime_id = regime_id
+
+    def _regime_for(self, dates: np.ndarray) -> np.ndarray | None:
+        if self._regime_dates is None:
+            return None
+        idx = np.searchsorted(self._regime_dates, dates)
+        idx = np.clip(idx, 0, len(self._regime_dates) - 1)
+        return np.where(self._regime_dates[idx] == dates, self._regime_flags[idx], False)
 
     def _path(self, key: tuple) -> Path | None:
         if not self.cache_dir:
@@ -88,6 +116,30 @@ class TradeCache:
             entry = np.where(np.isnan(rsi), False, entry)
             rec = run_cell(entry, a.sig_close, a.sig_high, a.ex_open, a.ex_close, a.div,
                            direction, max_hold, self.notional, self.cost_model.per_side_bps(symbol))
+            return _to_frame(symbol, a.dates, rec, rsi)
+
+        return self._get(key, compute)
+
+    def mr_trades(self, symbol: str, period: int, threshold: float, direction: int = 1,
+                  exit_spec: ExitSpec = NEUTRAL_MR_EXIT, filters: tuple[FilterSpec, ...] = ()) -> pl.DataFrame:
+        """RSI mean-reversion entry + any exit from the library + any combination of filters."""
+        fkey = tuple(f.id for f in filters)
+        needs_regime = any(f.kind == "market_up" for f in filters)
+        key = ("mr", symbol, period, threshold, direction, exit_spec.id, fkey,
+               self._regime_id if needs_regime else "-", self.data_version, self.cost_model.fingerprint())
+
+        def compute():
+            a = self.arrays[symbol]
+            rsi = rsi_wilder(a.sig_close, period)
+            entry = (rsi < threshold) if direction == 1 else (rsi > 100 - threshold)
+            entry = np.where(np.isnan(rsi), False, entry)
+            atr = atr_exec_units(a.sig_high, a.sig_low, a.sig_close, a.factor)
+            for f in filters:
+                entry = entry & filter_mask(f, a.sig_close, atr, a.ex_close, self._regime_for(a.dates))
+            ex = exit_signal(exit_spec, a.sig_close, a.sig_high if direction == 1 else a.sig_low, direction, period)
+            rec = run_cell_generic(entry, ex, a.ex_open, a.ex_close, a.div, atr, direction, exit_spec.max_hold,
+                                   exit_spec.target_atr, exit_spec.stop_atr, self.notional,
+                                   self.cost_model.per_side_bps(symbol))
             return _to_frame(symbol, a.dates, rec, rsi)
 
         return self._get(key, compute)
