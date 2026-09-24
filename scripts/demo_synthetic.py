@@ -27,10 +27,15 @@ def main(kind: str = "mean_revert") -> dict:
     cache = TradeCache(prepare_arrays(dev, fm.dev_view(divs, "ex_date")), f"syn-{kind}-11")
     reg = Registry()
     out = {}
-    for name, cfg in {"A0": RowConfig(select=False), "A1": RowConfig(select=True)}.items():
+    configs = {
+        "A0": RowConfig(select=False),
+        "A1": RowConfig(select=True),
+        "A1_capacity": RowConfig(select=True, max_positions=10, max_new_per_day=3),
+    }
+    for name, cfg in configs.items():
         grid = build_grid(fm, cache, dev, mem, cfg)
         run_row(fm, cache, dev, mem, cfg, reg, grid=grid)
-        out[name] = evaluate_row(grid, cfg, n_draws=200)
+        out[name] = evaluate_row(grid, cfg, n_draws=200, n_trials=len(configs))
     out["trials_registered"] = reg.count_trials()
     return out
 

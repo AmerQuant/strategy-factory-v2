@@ -22,11 +22,21 @@ def trade_stats(trades: pl.DataFrame) -> dict:
     }
 
 
+def daily_pnl(trades: pl.DataFrame) -> np.ndarray:
+    """Realised pnl per weekday (by exit date) over the trades' span, zero-filled on days without exits."""
+    if len(trades) == 0:
+        return np.zeros(0)
+    start, end = trades["entry_date"].min(), trades["exit_date"].max()
+    cal = pl.DataFrame({"exit_date": pl.date_range(start, end, "1d", eager=True)}).filter(
+        pl.col("exit_date").dt.weekday() <= 5)
+    agg = trades.group_by("exit_date").agg(pl.col("net_pnl").sum())
+    return cal.join(agg, on="exit_date", how="left").sort("exit_date")["net_pnl"].fill_null(0.0).to_numpy()
+
+
 def equity_stats(trades: pl.DataFrame, capital: float = 100_000.0) -> dict:
     if len(trades) == 0:
         return {"sharpe": 0.0, "max_dd": 0.0}
-    daily = trades.group_by("exit_date").agg(pl.col("net_pnl").sum()).sort("exit_date")
-    pnl = daily["net_pnl"].to_numpy()
+    pnl = daily_pnl(trades)
     eq = capital + np.cumsum(pnl)
     dd = float(((np.maximum.accumulate(eq) - eq) / capital).max())
     sh = float(pnl.mean() / pnl.std(ddof=1) * math.sqrt(252)) if len(pnl) > 1 and pnl.std() > 0 else 0.0

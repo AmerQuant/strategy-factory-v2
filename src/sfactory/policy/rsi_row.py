@@ -14,10 +14,11 @@ import polars as pl
 from sfactory.engine.cache import TradeCache
 from sfactory.metrics.core import equity_stats, trade_stats
 from sfactory.policy.grid import FoldCell, build_grid
+from sfactory.portfolio.capacity import simulate_capacity
 from sfactory.registry.repo import Registry
 from sfactory.timeline.folds import FoldManager
 
-CODE_VERSION = "0.2.0"
+CODE_VERSION = "0.3.0"
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,11 @@ class RowConfig:
     min_price: float = 5.0
     min_dollar_vol: float = 1e6
     min_history: int = 250
+    # capacity (S8); max_positions = 0 -> cell mode (every signal taken at the cache notional)
+    max_positions: int = 0
+    max_new_per_day: int = 5
+    ranker: str = "score_asc"
+    capital: float = 100_000.0
 
 
 @dataclass
@@ -63,7 +69,16 @@ def select_threshold(scores: list[float]) -> int:
 Chooser = Callable[[int, FoldCell], float]
 
 
-def assemble(grid: list[FoldCell], cfg: RowConfig, choose: Chooser) -> RowResult:
+def apply_capacity(trades: pl.DataFrame, cfg: RowConfig, cache_notional: float, ranker: str | None = None,
+                   seed: int = 0) -> pl.DataFrame:
+    if cfg.max_positions <= 0 or len(trades) == 0:
+        return trades
+    return simulate_capacity(trades, cfg.max_positions, cfg.max_new_per_day, cfg.capital, cache_notional,
+                             ranker or cfg.ranker, seed)
+
+
+def assemble(grid: list[FoldCell], cfg: RowConfig, choose: Chooser, cache_notional: float = 100_000.0,
+             ranker: str | None = None, seed: int = 0) -> RowResult:
     """Run a threshold-choosing rule over precomputed folds and stitch the OOS trades."""
     res = RowResult(cfg)
     oos = []
@@ -76,7 +91,7 @@ def assemble(grid: list[FoldCell], cfg: RowConfig, choose: Chooser) -> RowResult
         f = cell.oos[thr]
         if len(f):
             oos.append(f.with_columns(pl.lit(cell.fold.index).alias("fold")))
-    res.oos_trades = pl.concat(oos) if oos else pl.DataFrame()
+    res.oos_trades = apply_capacity(pl.concat(oos) if oos else pl.DataFrame(), cfg, cache_notional, ranker, seed)
     res.stats = {**trade_stats(res.oos_trades), **equity_stats(res.oos_trades)}
     return res
 
@@ -90,7 +105,7 @@ def policy_chooser(cfg: RowConfig) -> Chooser:
 def run_row(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membership: pl.DataFrame,
             cfg: RowConfig, registry: Registry | None = None, grid: list[FoldCell] | None = None) -> RowResult:
     grid = grid if grid is not None else build_grid(fm, cache, bars_dev, membership, cfg)
-    res = assemble(grid, cfg, policy_chooser(cfg))
+    res = assemble(grid, cfg, policy_chooser(cfg), cache.notional)
     if registry is not None:
         tid = registry.record_trial(cfg.row_id, asdict(cfg), cache.data_version, CODE_VERSION, res.stats)
         for d in res.decisions:

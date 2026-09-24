@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from sfactory.costs.model import CostModel
 from sfactory.engine.cell import run_cell
 from sfactory.signals.indicators import rsi_wilder
 
@@ -44,9 +45,10 @@ class TradeCache:
     """In-memory cache, optionally backed by Parquet files in `cache_dir` (one file per key)."""
 
     def __init__(self, arrays: dict[str, SymbolArrays], data_version: str, notional: float = 100_000.0,
-                 cost_bps: float = 5.0, cache_dir: str | Path | None = None):
+                 cost_bps: float = 5.0, cache_dir: str | Path | None = None, cost_model: CostModel | None = None):
         self.arrays, self.data_version = arrays, data_version
-        self.notional, self.cost_bps = notional, cost_bps
+        self.notional = notional
+        self.cost_model = cost_model if cost_model is not None else CostModel.flat(cost_bps)
         self._store: dict[tuple, pl.DataFrame] = {}
         self.computed = 0
         self.loaded = 0
@@ -76,7 +78,8 @@ class TradeCache:
         return df
 
     def rsi_mr(self, symbol: str, period: int, threshold: float, direction: int = 1, max_hold: int = 5):
-        key = ("rsi_mr", symbol, period, threshold, direction, max_hold, self.data_version, self.cost_bps)
+        key = ("rsi_mr", symbol, period, threshold, direction, max_hold, self.data_version,
+               self.cost_model.fingerprint())
 
         def compute():
             a = self.arrays[symbol]
@@ -84,17 +87,19 @@ class TradeCache:
             entry = (rsi < threshold) if direction == 1 else (rsi > 100 - threshold)
             entry = np.where(np.isnan(rsi), False, entry)
             rec = run_cell(entry, a.sig_close, a.sig_high, a.ex_open, a.ex_close, a.div,
-                           direction, max_hold, self.notional, self.cost_bps)
-            return _to_frame(symbol, a.dates, rec)
+                           direction, max_hold, self.notional, self.cost_model.per_side_bps(symbol))
+            return _to_frame(symbol, a.dates, rec, rsi)
 
         return self._get(key, compute)
 
 
-def _to_frame(symbol: str, dates: np.ndarray, rec: np.ndarray) -> pl.DataFrame:
+def _to_frame(symbol: str, dates: np.ndarray, rec: np.ndarray, score: np.ndarray) -> pl.DataFrame:
+    """`score` is the signal-strength series (e.g. RSI) sampled at the signal bar, used by daily rankers."""
     idx = rec[:, :3].astype(np.int64) if len(rec) else np.zeros((0, 3), np.int64)
     return pl.DataFrame({
         "symbol": [symbol] * len(rec),
         "signal_date": dates[idx[:, 0]], "entry_date": dates[idx[:, 1]], "exit_date": dates[idx[:, 2]],
         "entry_px": rec[:, 3], "exit_px": rec[:, 4], "shares": rec[:, 5], "gross_pnl": rec[:, 6],
         "cost": rec[:, 7], "dividends": rec[:, 8], "net_pnl": rec[:, 9], "forced_exit": rec[:, 10] > 0,
+        "score": score[idx[:, 0]] if len(rec) else np.zeros(0),
     }, schema_overrides={"signal_date": pl.Date, "entry_date": pl.Date, "exit_date": pl.Date})
