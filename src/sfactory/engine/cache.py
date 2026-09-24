@@ -12,6 +12,7 @@ from sfactory.costs.model import CostModel
 from sfactory.engine.cell import run_cell
 from sfactory.engine.generic import run_cell_generic
 from sfactory.signals.indicators import rsi_wilder
+from sfactory.signals.methods import EntrySpec, entry_and_score, reverse_exit
 from sfactory.signals.specs import (
     NEUTRAL_MR_EXIT,
     ExitSpec,
@@ -122,25 +123,32 @@ class TradeCache:
 
     def mr_trades(self, symbol: str, period: int, threshold: float, direction: int = 1,
                   exit_spec: ExitSpec = NEUTRAL_MR_EXIT, filters: tuple[FilterSpec, ...] = ()) -> pl.DataFrame:
-        """RSI mean-reversion entry + any exit from the library + any combination of filters."""
+        """RSI(2) mean-reversion entry (kept for the ladder API); `period` is fixed at 2."""
+        return self.trades(symbol, EntrySpec("rsi", threshold, direction), exit_spec, filters)
+
+    def trades(self, symbol: str, entry_spec: EntrySpec, exit_spec: ExitSpec,
+               filters: tuple[FilterSpec, ...] = ()) -> pl.DataFrame:
+        """Any entry method + any exit from the libraries + any combination of filters."""
         fkey = tuple(f.id for f in filters)
         needs_regime = any(f.kind == "market_up" for f in filters)
-        key = ("mr", symbol, period, threshold, direction, exit_spec.id, fkey,
+        key = ("tr", symbol, entry_spec.id, exit_spec.id, fkey,
                self._regime_id if needs_regime else "-", self.data_version, self.cost_model.fingerprint())
 
         def compute():
             a = self.arrays[symbol]
-            rsi = rsi_wilder(a.sig_close, period)
-            entry = (rsi < threshold) if direction == 1 else (rsi > 100 - threshold)
-            entry = np.where(np.isnan(rsi), False, entry)
+            d = entry_spec.direction
+            entry, score = entry_and_score(entry_spec, a.sig_high, a.sig_low, a.sig_close)
             atr = atr_exec_units(a.sig_high, a.sig_low, a.sig_close, a.factor)
             for f in filters:
-                entry = entry & filter_mask(f, a.sig_close, atr, a.ex_close, self._regime_for(a.dates))
-            ex = exit_signal(exit_spec, a.sig_close, a.sig_high if direction == 1 else a.sig_low, direction, period)
-            rec = run_cell_generic(entry, ex, a.ex_open, a.ex_close, a.div, atr, direction, exit_spec.max_hold,
-                                   exit_spec.target_atr, exit_spec.stop_atr, self.notional,
-                                   self.cost_model.per_side_bps(symbol))
-            return _to_frame(symbol, a.dates, rec, rsi)
+                entry = entry & filter_mask(f, a.sig_close, atr, a.ex_close, self._regime_for(a.dates), d)
+            if exit_spec.kind == "reverse":
+                ex = reverse_exit(entry_spec, a.sig_high, a.sig_low, a.sig_close)
+            else:
+                ex = exit_signal(exit_spec, a.sig_close, a.sig_high if d == 1 else a.sig_low, d, 2)
+            rec = run_cell_generic(entry.astype(np.bool_), ex.astype(np.bool_), a.ex_open, a.ex_close, a.div,
+                                   atr, d, exit_spec.max_hold, exit_spec.target_atr, exit_spec.stop_atr,
+                                   self.notional, self.cost_model.per_side_bps(symbol), exit_spec.trail_atr)
+            return _to_frame(symbol, a.dates, rec, score)
 
         return self._get(key, compute)
 

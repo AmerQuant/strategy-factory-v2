@@ -1,4 +1,5 @@
-"""Generic cell kernel: arbitrary causal exit signal + optional ATR target/stop (close-based) + max hold.
+"""Generic cell kernel: arbitrary causal exit signal + optional ATR target/stop and chandelier-style
+trailing stop (all close-based) + max hold.
 
 Same execution contract as engine.cell: signal on close t -> fill at open t+1; any exit condition on close j ->
 fill at open j+1; missing next bar -> forced exit at last close. ATR is taken at the signal bar and expressed in
@@ -12,7 +13,7 @@ from numba import njit
 
 @njit(cache=True)
 def run_cell_generic(entry, exit_sig, ex_open, ex_close, div, atr, direction, max_hold,
-                     target_atr, stop_atr, notional, cost_bps):
+                     target_atr, stop_atr, notional, cost_bps, trail_atr=0.0):
     n = entry.shape[0]
     rec = np.full((n // 2 + 1, 11), np.nan)
     k = 0
@@ -27,12 +28,15 @@ def run_cell_generic(entry, exit_sig, ex_open, ex_close, div, atr, direction, ma
         a = atr[t]
         j = ent
         forced = 0.0
+        peak = -np.inf
         while True:
             held = j - ent + 1
             move = direction * (ex_close[j] - ent_px)
+            peak = max(peak, move)
             hit_t = target_atr > 0 and not np.isnan(a) and move >= target_atr * a
             hit_s = stop_atr > 0 and not np.isnan(a) and move <= -stop_atr * a
-            if exit_sig[j] or held >= max_hold or hit_t or hit_s:
+            hit_tr = trail_atr > 0 and not np.isnan(a) and move <= peak - trail_atr * a
+            if exit_sig[j] or held >= max_hold or hit_t or hit_s or hit_tr:
                 if j + 1 < n and not np.isnan(ex_open[j + 1]):
                     ex_i = j + 1
                     ex_px = ex_open[ex_i]

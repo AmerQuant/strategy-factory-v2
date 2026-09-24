@@ -18,7 +18,7 @@ def business_days(start: date, n: int) -> list[date]:
 
 def make_market(n_symbols: int = 20, n_days: int = 2600, seed: int = 7, kind: str = "random_walk",
                 start: date = date(2010, 1, 4), mr_strength: float = 0.25):
-    """Returns (bars, dividends, membership). kind: 'random_walk' | 'mean_revert'.
+    """Returns (bars, dividends, membership). kind: 'random_walk' | 'mean_revert' | 'trending'.
 
     Split-only prices drop by the dividend amount on ex-dates, like real data.
     Some symbols join late and some are delisted early (their data stops).
@@ -34,6 +34,11 @@ def make_market(n_symbols: int = 20, n_days: int = 2600, seed: int = 7, kind: st
         if kind == "mean_revert":
             for t in range(1, n_days):
                 r[t] = eps[t] - mr_strength * r[t - 1]
+        elif kind == "trending":  # slow-moving drift regimes -> exploitable trends
+            drift = np.zeros(n_days)
+            for t in range(1, n_days):
+                drift[t] = 0.99 * drift[t - 1] + rng.normal(0, vol * 0.02)
+            r = eps + drift
         s_idx = int(rng.integers(1, n_days // 4)) if i % 4 == 0 else 0
         e_idx = int(rng.integers(3 * n_days // 4, n_days)) if i % 5 == 0 else n_days
         div_idx = list(range(s_idx + 60, e_idx, 63))

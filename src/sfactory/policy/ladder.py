@@ -1,5 +1,8 @@
 """Row with the full in-fold ablation ladder (design 9.2): A0 fixed -> A1 entry -> A3 exit -> A4 filter.
 
+Any entry method (signals.methods: MR rsi/ibs/consec/lowest_close/donchian_low, TF ma_cross/donchian_break/
+supertrend/ichimoku), buy or sell. Grid, default value, exit library and neutral exit follow the method family.
+
 Per decision point, using IS trades only:
   A1  entry threshold by plateau-lite over the grid (neutral exit, no optional filter)
   A3  exit from the library; accepted only if it beats the neutral exit by `exit_margin` (t-stat units)
@@ -22,22 +25,23 @@ from sfactory.metrics.core import equity_stats, trade_stats
 from sfactory.policy.rsi_row import select_threshold
 from sfactory.portfolio.capacity import simulate_capacity
 from sfactory.registry.repo import Registry
-from sfactory.signals.specs import MR_EXIT_LIBRARY, MR_FILTER_LIBRARY, NEUTRAL_MR_EXIT, ExitSpec, FilterSpec
+from sfactory.signals.methods import DEFAULT, FAMILY, GRID, EntrySpec
+from sfactory.signals.specs import MR_FILTER_LIBRARY, ExitSpec, FilterSpec, exit_library, neutral_exit
 from sfactory.timeline.folds import FoldManager
 
-CODE_VERSION = "0.4.0"
+CODE_VERSION = "0.5.0"
 RUNG_LEVEL = {"A0": 0, "A1": 1, "A3": 3, "A4": 4}
 
 
 @dataclass(frozen=True)
 class LadderConfig:
-    row_id: str = "MR-RSI2-BUY-EQ"
     rung: str = "A0"
-    period: int = 2
-    thresholds: tuple = (5.0, 10.0, 15.0, 20.0, 25.0)
-    fixed_threshold: float = 10.0
+    method: str = "rsi"
     direction: int = 1
-    exits: tuple = MR_EXIT_LIBRARY
+    row_id: str | None = None          # default: <family>-<METHOD>-<BUY|SELL>-EQ
+    thresholds: tuple | None = None    # entry grid; default signals.methods.GRID[method]
+    fixed_threshold: float | None = None
+    exits: tuple | None = None         # default: the family's exit library
     filters: tuple = MR_FILTER_LIBRARY
     structural: tuple = ()
     min_is_trades: int = 30
@@ -57,6 +61,31 @@ class LadderConfig:
     @property
     def level(self) -> int:
         return RUNG_LEVEL[self.rung]
+
+    @property
+    def family(self) -> str:
+        return FAMILY[self.method]
+
+    @property
+    def grid(self) -> tuple:
+        return tuple(self.thresholds) if self.thresholds is not None else GRID[self.method]
+
+    @property
+    def fixed(self) -> float:
+        return self.fixed_threshold if self.fixed_threshold is not None else DEFAULT[self.method]
+
+    @property
+    def neutral(self) -> ExitSpec:
+        return neutral_exit(self.family)
+
+    @property
+    def exit_lib(self) -> tuple:
+        return tuple(self.exits) if self.exits is not None else exit_library(self.family)
+
+    @property
+    def rid(self) -> str:
+        side = "BUY" if self.direction == 1 else "SELL"
+        return self.row_id or f"{self.family}-{self.method.upper()}-{side}-EQ"
 
 
 @dataclass
@@ -109,7 +138,8 @@ class _FoldView:
 
     def trades(self, thr: float, ex: ExitSpec, fl: tuple[FilterSpec, ...]):
         c = self.cfg
-        return [self.cache.mr_trades(s, c.period, thr, c.direction, ex, c.structural + fl) for s in self.elig]
+        spec = EntrySpec(c.method, thr, c.direction)
+        return [self.cache.trades(s, spec, ex, c.structural + fl) for s in self.elig]
 
     def is_df(self, thr: float, ex: ExitSpec, fl: tuple = ()) -> pl.DataFrame:
         key = (thr, ex.id, tuple(f.id for f in fl))
@@ -133,22 +163,23 @@ def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membe
         is_df = view.is_df
         d = {"fold": fold.index, "dp": str(fold.dp), "n_eligible": len(elig)}
         # A1: entry threshold
-        thr = cfg.fixed_threshold
+        grid, neutral = cfg.grid, cfg.neutral
+        thr = cfg.fixed
         if lvl >= 1:
-            scores = [_t(is_df(x, NEUTRAL_MR_EXIT), cfg.min_is_trades) for x in cfg.thresholds]
-            thr = cfg.thresholds[select_threshold(scores)]
+            scores = [_t(is_df(x, neutral), cfg.min_is_trades) for x in grid]
+            thr = grid[select_threshold(scores)]
             d["entry_scores"] = [None if np.isnan(v) else round(float(v), 4) for v in scores]
         d["threshold"] = thr
         # A3: exit
-        ex = NEUTRAL_MR_EXIT
+        ex = neutral
         if lvl >= 3:
-            t0 = _t(is_df(thr, NEUTRAL_MR_EXIT), cfg.min_is_trades)
-            cand = [(e, _t(is_df(thr, e), cfg.min_is_trades)) for e in cfg.exits if e != NEUTRAL_MR_EXIT]
+            t0 = _t(is_df(thr, neutral), cfg.min_is_trades)
+            cand = [(e, _t(is_df(thr, e), cfg.min_is_trades)) for e in cfg.exit_lib if e != neutral]
             cand = [(e, v) for e, v in cand if not np.isnan(v)]
             if cand and not np.isnan(t0):
                 best, tb = max(cand, key=lambda c: c[1])
-                i = cfg.thresholds.index(thr)
-                nbs = [cfg.thresholds[j] for j in (i - 1, i + 1) if 0 <= j < len(cfg.thresholds)]
+                i = grid.index(thr)
+                nbs = [grid[j] for j in (i - 1, i + 1) if 0 <= j < len(grid)]
                 plateau_ok = tb > 0 and all(
                     _t(is_df(nb, best), cfg.min_is_trades) >= cfg.plateau_ratio * tb for nb in nbs)
                 d["exit_candidate"] = best.id
@@ -186,7 +217,7 @@ def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membe
     res.oos_trades = stitched
     res.stats = {**trade_stats(stitched), **equity_stats(stitched)}
     if registry is not None:
-        tid = registry.record_trial(cfg.row_id, asdict(cfg), cache.data_version, CODE_VERSION, res.stats)
+        tid = registry.record_trial(cfg.rid, asdict(cfg), cache.data_version, CODE_VERSION, res.stats)
         for dd in res.decisions:
             registry.record_fold(tid, dd["fold"], dd["dp"], dd)
     return res
