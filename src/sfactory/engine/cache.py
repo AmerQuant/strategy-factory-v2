@@ -1,4 +1,9 @@
-"""Compute-once / slice-many: per-symbol arrays + trade cache keyed by (rule, params, data_version)."""
+"""Compute-once / slice-many: per-symbol arrays + trade cache keyed by (rule, params, data_version).
+
+Works for daily bars (`date` is a Date) and intraday bars (`date` is a naive Datetime = bar start): the engine is
+bar-index based, trade timestamps keep the bar dtype, dividends are credited on the first bar of the ex-date and
+swap is charged per calendar-day boundary crossed (the rollover of the run's clock).
+"""
 from __future__ import annotations
 
 import hashlib
@@ -9,6 +14,7 @@ import numpy as np
 import polars as pl
 
 from sfactory.costs.model import CostModel
+from sfactory.data.adjust import bar_days
 from sfactory.engine.cell import run_cell
 from sfactory.engine.generic import run_cell_generic
 from sfactory.signals.indicators import rsi_wilder
@@ -41,12 +47,13 @@ def prepare_arrays(bars: pl.DataFrame, dividends: pl.DataFrame) -> dict[str, Sym
     out = {}
     for (sym,), g in bars.sort(["symbol", "date"]).partition_by("symbol", as_dict=True).items():
         dates = g["date"].to_numpy()
+        days = bar_days(dates)
         f = g["adj_factor"].to_numpy()
         div = np.zeros(len(g))
         d = dividends.filter(pl.col("symbol") == sym)
         for ex, amt in zip(d["ex_date"].to_numpy(), d["amount"].to_numpy()):
-            i = int(np.searchsorted(dates, ex))
-            if i < len(dates) and dates[i] == ex:
+            i = int(np.searchsorted(days, ex))          # first bar of the ex-date
+            if i < len(days) and days[i] == ex:
                 div[i] = amt
         out[sym] = SymbolArrays(sym, dates, g["close"].to_numpy() * f, g["high"].to_numpy() * f,
                                 g["open"].to_numpy(), g["close"].to_numpy(), div,
@@ -160,23 +167,27 @@ class TradeCache:
 
 
     def _with_financing(self, df: pl.DataFrame, symbol: str, direction: int) -> pl.DataFrame:
-        """Overnight financing (swap): notional x rate / day_count x calendar days held; added to net pnl."""
+        """Overnight financing (swap): notional x rate / day_count x calendar-day boundaries crossed (daily bars:
+        calendar days held; intraday: rollovers of the run's clock, 0 for a trade opened and closed the same day);
+        added to net pnl."""
         rate = self.cost_model.swap_pct(symbol, direction)
         if rate == 0 or len(df) == 0:
             return df.with_columns(pl.lit(0.0).alias("financing"))
-        fin = (pl.col("shares") * pl.col("entry_px") * (rate / 100 / self.cost_model.day_count)
-               * (pl.col("exit_date") - pl.col("entry_date")).dt.total_days())
+        nights = (pl.col("exit_date").cast(pl.Date) - pl.col("entry_date").cast(pl.Date)).dt.total_days()
+        fin = pl.col("shares") * pl.col("entry_px") * (rate / 100 / self.cost_model.day_count) * nights
         return df.with_columns(fin.alias("financing")).with_columns((pl.col("net_pnl") + pl.col("financing"))
                                                                    .alias("net_pnl"))
 
 
 def _to_frame(symbol: str, dates: np.ndarray, rec: np.ndarray, score: np.ndarray) -> pl.DataFrame:
-    """`score` is the signal-strength series (e.g. RSI) sampled at the signal bar, used by daily rankers."""
+    """`score` is the signal-strength series (e.g. RSI) sampled at the signal bar, used by daily rankers.
+    Timestamp columns keep the bar dtype: Date for daily bars, Datetime(us) for intraday bars."""
     idx = rec[:, :3].astype(np.int64) if len(rec) else np.zeros((0, 3), np.int64)
+    tdt = pl.Date if dates.dtype == np.dtype("datetime64[D]") else pl.Datetime("us")
     return pl.DataFrame({
         "symbol": [symbol] * len(rec),
         "signal_date": dates[idx[:, 0]], "entry_date": dates[idx[:, 1]], "exit_date": dates[idx[:, 2]],
         "entry_px": rec[:, 3], "exit_px": rec[:, 4], "shares": rec[:, 5], "gross_pnl": rec[:, 6],
         "cost": rec[:, 7], "dividends": rec[:, 8], "net_pnl": rec[:, 9], "forced_exit": rec[:, 10] > 0,
         "score": score[idx[:, 0]] if len(rec) else np.zeros(0),
-    }, schema_overrides={"signal_date": pl.Date, "entry_date": pl.Date, "exit_date": pl.Date})
+    }, schema_overrides={"signal_date": tdt, "entry_date": tdt, "exit_date": tdt})

@@ -37,10 +37,11 @@ def mc_drawdown_p95(daily: np.ndarray, capital: float, n_boot: int = 1000, block
 
 
 def regime_breakdown(trades: pl.DataFrame, dates: np.ndarray, flags: np.ndarray) -> dict:
-    """Trade expectancy by causal regime label at the signal date."""
+    """Trade expectancy by causal regime label at the signal bar (daily or intraday timestamps)."""
     if len(trades) == 0:
         return {}
-    lab = pl.DataFrame({"signal_date": dates, "up": flags}).with_columns(pl.col("signal_date").cast(pl.Date))
+    lab = pl.DataFrame({"signal_date": dates, "up": flags}).with_columns(
+        pl.col("signal_date").cast(trades.schema["signal_date"]))
     j = trades.join(lab, on="signal_date", how="left").with_columns(pl.col("up").fill_null(False))
     out = {}
     for name, flag in (("market_up", True), ("market_down", False)):

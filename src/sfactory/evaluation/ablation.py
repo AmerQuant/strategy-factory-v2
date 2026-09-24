@@ -17,6 +17,7 @@ from sfactory.stats.multiple import pbo_cscv
 
 
 def aligned_daily(trade_sets: list[pl.DataFrame], start, end) -> np.ndarray:
+    """Weekday calendar x trade sets matrix of realised pnl by exit day (intraday exits summed per day)."""
     cal = pl.DataFrame({"exit_date": pl.date_range(start, end, "1d", eager=True)}).filter(
         pl.col("exit_date").dt.weekday() <= 5)
     cols = []
@@ -24,7 +25,7 @@ def aligned_daily(trade_sets: list[pl.DataFrame], start, end) -> np.ndarray:
         if len(t) == 0:
             cols.append(np.zeros(len(cal)))
             continue
-        agg = t.group_by("exit_date").agg(pl.col("net_pnl").sum())
+        agg = t.group_by(pl.col("exit_date").cast(pl.Date)).agg(pl.col("net_pnl").sum())
         cols.append(cal.join(agg, on="exit_date", how="left").sort("exit_date")["net_pnl"].fill_null(0.0).to_numpy())
     return np.column_stack(cols)
 

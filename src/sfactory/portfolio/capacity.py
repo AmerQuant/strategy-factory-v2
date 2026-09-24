@@ -1,8 +1,9 @@
 """Capacity-constrained portfolio simulation over a stitched stream of candidate trades (design 7.6, S8).
 
-Rules: positions are processed in entry-date order; a slot frees on the exit date (exit and entry both fill
-at the open); at most `max_positions` open, at most `max_new_per_day` new entries per day, one position per
-symbol. Candidates of the same day are ranked by `score` (ascending: lower = more oversold) or randomly.
+Rules: positions are processed in entry-bar order; a slot frees on the exit bar (exit and entry both fill
+at the open); at most `max_positions` open, at most `max_new_per_day` new entries per calendar day (intraday
+bars of one day share the daily budget), one position per symbol. Candidates of the same bar are ranked by
+`score` (ascending: lower = more oversold) or randomly.
 Each taken trade is sized at capital / max_positions (pnl is rescaled from the cache's fixed notional).
 """
 from __future__ import annotations
@@ -29,9 +30,11 @@ def simulate_capacity(cands: pl.DataFrame, max_positions: int, max_new_per_day: 
     held: set[str] = set()
     keep = np.zeros(len(df), dtype=bool)
     ent = df["entry_date"].to_list()
+    ent_day = df["entry_date"].cast(pl.Date).to_list()
     ex = df["exit_date"].to_list()
     sym = df["symbol"].to_list()
     rank = df["_r"].to_numpy()
+    taken_on: dict = {}
     i, n = 0, len(df)
     while i < n:
         day = ent[i]
@@ -42,7 +45,7 @@ def simulate_capacity(cands: pl.DataFrame, max_positions: int, max_new_per_day: 
             _, s = heapq.heappop(open_heap)
             held.discard(s)
         order = sorted(range(i, j), key=lambda k: (rank[k], sym[k]))
-        taken = 0
+        taken = taken_on.get(ent_day[i], 0)
         for k in order:
             if len(held) >= max_positions or taken >= max_new_per_day:
                 break
@@ -52,6 +55,7 @@ def simulate_capacity(cands: pl.DataFrame, max_positions: int, max_new_per_day: 
             held.add(sym[k])
             heapq.heappush(open_heap, (ex[k], sym[k]))
             taken += 1
+        taken_on[ent_day[i]] = taken
         i = j
     scale = (capital / max_positions) / cache_notional
     out = df.filter(pl.Series(keep)).drop("_r")
