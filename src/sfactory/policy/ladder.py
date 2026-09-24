@@ -57,6 +57,7 @@ class LadderConfig:
     max_new_per_day: int = 5
     ranker: str = "score_asc"
     capital: float = 100_000.0
+    entry_delay: int = 0               # robustness only: execution delay in bars (0 in every real policy)
 
     @property
     def level(self) -> int:
@@ -139,7 +140,7 @@ class _FoldView:
     def trades(self, thr: float, ex: ExitSpec, fl: tuple[FilterSpec, ...]):
         c = self.cfg
         spec = EntrySpec(c.method, thr, c.direction)
-        return [self.cache.trades(s, spec, ex, c.structural + fl) for s in self.elig]
+        return [self.cache.trades(s, spec, ex, c.structural + fl, c.entry_delay) for s in self.elig]
 
     def is_df(self, thr: float, ex: ExitSpec, fl: tuple = ()) -> pl.DataFrame:
         key = (thr, ex.id, tuple(f.id for f in fl))

@@ -127,12 +127,15 @@ class TradeCache:
         return self.trades(symbol, EntrySpec("rsi", threshold, direction), exit_spec, filters)
 
     def trades(self, symbol: str, entry_spec: EntrySpec, exit_spec: ExitSpec,
-               filters: tuple[FilterSpec, ...] = ()) -> pl.DataFrame:
-        """Any entry method + any exit from the libraries + any combination of filters."""
+               filters: tuple[FilterSpec, ...] = (), delay: int = 0) -> pl.DataFrame:
+        """Any entry method + any exit from the libraries + any combination of filters.
+
+        delay > 0 postpones the entry by that many bars (robustness test: execution delay).
+        """
         fkey = tuple(f.id for f in filters)
         needs_regime = any(f.kind == "market_up" for f in filters)
         key = ("tr", symbol, entry_spec.id, exit_spec.id, fkey,
-               self._regime_id if needs_regime else "-", self.data_version, self.cost_model.fingerprint())
+               self._regime_id if needs_regime else "-", self.data_version, self.cost_model.fingerprint(), delay)
 
         def compute():
             a = self.arrays[symbol]
@@ -141,6 +144,9 @@ class TradeCache:
             atr = atr_exec_units(a.sig_high, a.sig_low, a.sig_close, a.factor)
             for f in filters:
                 entry = entry & filter_mask(f, a.sig_close, atr, a.ex_close, self._regime_for(a.dates), d)
+            if delay > 0:
+                entry = np.r_[np.zeros(delay, dtype=np.bool_), entry[:-delay]]
+                score = np.r_[np.full(delay, np.nan), score[:-delay]]
             if exit_spec.kind == "reverse":
                 ex = reverse_exit(entry_spec, a.sig_high, a.sig_low, a.sig_close)
             else:

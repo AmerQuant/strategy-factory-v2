@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 74 passing (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 78 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -26,10 +26,11 @@
 - catalogue runner: registry-counted trials → PSR/DSR (within-family variance) → BH → two-path gate → WF-native combined policy (corr cap, inverse vol), effective N, family ensemble helper (docs/spec/catalog.md)
 - holdout: frozen-policy hash, dev-only bootstrap criteria, register→open burn rule in the registry, locked-fold run, all-rows benchmark; JSON evidence package + Persian report prompt (docs/spec/holdout.md)
 - forward: shared per-DP selector (decide_fold); live book, book diff, daily orders; MC bands, CUSUM, implementation shortfall, pre-registered promote/continue/stop rules (docs/spec/forward.md)
+- robustness suite (cost 1.5x/2x, delay, noise, MC drawdown, causal regimes), Hansen SPA, vectorbt engine cross-check (docs/spec/robustness.md)
 
 ## Next
 1. Real-data adapters (owner's data: bars, dividends, historical membership) + data audit (P1) — needs a sample of the owner's files
-2. vectorbt cross-check test for the cell engine (P2)
+2. Add `uv sync --group crosscheck` to CI (needs a workflow edit by the owner)
 3. Broker bridge (P11): MT5 order/fill adapter, netting across rows, daily reconciliation, paper mode — needs the owner's machine
 4. Meta-grid (IS length, capacity, rung) per row; ensemble rows in the catalogue; symbol-based rows for FX / indices
-5. SPA test; remaining robustness tests (noise, delay, regime by causal labels)
+5. Wire robustness + SPA into the catalogue runner and the evidence package

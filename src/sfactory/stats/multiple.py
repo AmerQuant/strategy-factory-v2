@@ -1,4 +1,4 @@
-"""Multiple-testing tools (design 10.4 / ch. 11): Benjamini-Hochberg FDR and PBO via CSCV.
+"""Multiple-testing tools (design 10.4 / ch. 11): Benjamini-Hochberg FDR, PBO via CSCV, Hansen's SPA.
 
 PBO follows Bailey, Borwein, Lopez de Prado & Zhu (2014): split T periods into S blocks; for every choice of
 S/2 blocks as IS, pick the best configuration by IS Sharpe and record the logit of its relative OOS rank.
@@ -45,3 +45,38 @@ def pbo_cscv(returns: np.ndarray, n_blocks: int = 10) -> dict:
         lambdas.append(np.log(w / (1 - w)))
     lam = np.array(lambdas)
     return {"pbo": float((lam <= 0).mean()), "n_splits": len(lam), "median_logit": float(np.median(lam))}
+
+
+def _stationary_indices(n: int, mean_block: float, rng) -> np.ndarray:
+    idx = np.empty(n, dtype=np.int64)
+    p = 1.0 / mean_block
+    idx[0] = rng.integers(0, n)
+    for t in range(1, n):
+        idx[t] = rng.integers(0, n) if rng.random() < p else (idx[t - 1] + 1) % n
+    return idx
+
+
+def spa_test(candidates: np.ndarray, benchmark: np.ndarray, n_boot: int = 1000, mean_block: float = 20.0,
+             seed: int = 0) -> dict:
+    """Hansen (2005) Superior Predictive Ability test (consistent version) on performance differentials.
+
+    candidates: T x K daily returns of all evaluated strategies; benchmark: T returns.
+    H0: no candidate beats the benchmark. Small p-value = at least one genuinely better candidate.
+    """
+    x = np.asarray(candidates, float)
+    if x.ndim == 1:
+        x = x[:, None]
+    d = x - np.asarray(benchmark, float)[:, None]
+    n, k = d.shape
+    rng = np.random.default_rng(seed)
+    dbar = d.mean(axis=0)
+    boots = np.empty((n_boot, k))
+    for b in range(n_boot):
+        boots[b] = d[_stationary_indices(n, mean_block, rng)].mean(axis=0)
+    omega = np.sqrt(n) * boots.std(axis=0, ddof=1)
+    omega = np.where(omega > 0, omega, np.inf)
+    t_obs = max(0.0, float(np.max(np.sqrt(n) * dbar / omega)))
+    thresh = -np.sqrt(2 * np.log(np.log(n)))
+    mu_c = np.where(np.sqrt(n) * dbar / omega >= thresh, dbar, 0.0)
+    t_b = np.maximum(0.0, np.max(np.sqrt(n) * (boots - mu_c) / omega, axis=1))
+    return {"p_value": float((t_b >= t_obs).mean()), "stat": t_obs, "best": int(np.argmax(dbar)), "n_models": k}
