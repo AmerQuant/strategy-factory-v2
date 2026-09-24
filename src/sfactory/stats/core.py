@@ -72,3 +72,21 @@ def sharpe_report(daily_pnl, n_trials: int = 1, sr_variance: float | None = None
             "psr_vs_0": probabilistic_sharpe(sr, 0.0, n, sk, ku),
             "dsr": deflated_sharpe(sr, n, sk, ku, n_trials, var), "n_trials": n_trials,
             "min_trl_days": min_track_record_length(sr, 0.0, sk, ku)}
+
+
+def _sr(x: np.ndarray) -> float:
+    sd = x.std(ddof=1)
+    return float(x.mean() / sd) if sd > 0 else 0.0
+
+
+def sharpe_diff_ci(a, b, n_boot: int = 1000, alpha: float = 0.05, block: int = 20, seed: int = 0):
+    """Paired circular-block bootstrap CI of Sharpe(a) - Sharpe(b) (same resampled days for both)."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    n = len(a)
+    rng = np.random.default_rng(seed)
+    nb = math.ceil(n / block)
+    vals = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = (rng.integers(0, n, nb)[:, None] + np.arange(block)[None, :]).ravel()[:n] % n
+        vals[i] = _sr(a[idx]) - _sr(b[idx])
+    return float(np.quantile(vals, alpha / 2)), float(np.quantile(vals, 1 - alpha / 2))
