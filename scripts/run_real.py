@@ -9,6 +9,9 @@ combined policy -> [--open-holdout: the one-shot holdout] -> evidence.json + rep
 
 The registry file must be the same across runs: every run adds its trials there and DSR counts them all.
 Without --membership the universe is the top-N by trailing dollar volume at each DP (point-in-time).
+
+Intraday: `--timeframe 1H` reads the hourly store; `--resample 4h` builds 4H bars from it and `--clock-shift 7h`
+moves the clock to a broker day (17:00 New York = 00:00). Resampled / shifted data is a new data version.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from sfactory.data.audit import audit_bars, audit_summary
 from sfactory.data.contracts import DIVIDENDS_SCHEMA
 from sfactory.data.folds_from_data import fold_config_for
 from sfactory.data.regime import market_up_series
+from sfactory.data.resample import check_no_straddle, resample_bars, shift_clock
 from sfactory.data.sfac_store import load_store
 from sfactory.engine.cache import TradeCache, prepare_arrays
 from sfactory.evaluation.catalog_runner import run_catalog
@@ -43,6 +47,8 @@ def parse(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--registry", required=True, help="persistent DuckDB file shared by all runs")
     ap.add_argument("--timeframe", default="1D")
+    ap.add_argument("--resample", help="intraday only: build bars of this length from --timeframe, e.g. 4h")
+    ap.add_argument("--clock-shift", default="0h", help="intraday only: e.g. 7h puts 17:00 New York at 00:00")
     ap.add_argument("--symbols", help="text file, one symbol per line (e.g. the broker's tradable list)")
     ap.add_argument("--top-n", type=int, default=500)
     ap.add_argument("--membership", help="parquet: symbol, start, end (point-in-time index membership)")
@@ -64,9 +70,18 @@ def main(argv=None) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     symbols = [s.strip() for s in Path(a.symbols).read_text(encoding="utf-8").split() if s.strip()] if a.symbols else None
     load = load_store(a.store, a.timeframe, symbols=symbols)
-    issues = audit_bars(load.bars)
+    raw, version = load.bars, load.version
+    if a.timeframe != "1D":
+        if a.resample:
+            raw = resample_bars(raw, a.resample, a.clock_shift)
+        else:
+            raw = shift_clock(raw, a.clock_shift)
+        check_no_straddle(raw, a.resample or a.timeframe.lower())
+        if a.resample or a.clock_shift != "0h":
+            version = f"{version}-{a.resample or a.timeframe}-shift{a.clock_shift}"
+    issues = audit_bars(raw)
     audit = audit_summary(issues, len(load.symbols))
-    bars = load.bars.filter(~pl.col("symbol").is_in(audit["excluded_critical"]))
+    bars = raw.filter(~pl.col("symbol").is_in(audit["excluded_critical"]))
     divs = (pl.read_parquet(a.dividends).select(list(DIVIDENDS_SCHEMA)) if a.dividends
             else pl.DataFrame(schema=DIVIDENDS_SCHEMA))
     mem = pl.read_parquet(a.membership) if a.membership else None
@@ -79,7 +94,7 @@ def main(argv=None) -> dict:
     costs = (CostModel.moneta_share_cfd_proxy() if a.costs == "moneta" else CostModel.flat(5.0) if a.costs == "flat5"
              else load_cost_overrides(a.costs, CostModel.moneta_share_cfd_proxy()))
     dev, ddev = fm.dev_view(bars), fm.dev_view(divs, "ex_date")
-    cache = TradeCache(prepare_arrays(dev, ddev), load.version, cost_model=costs, cache_dir=out / "cache")
+    cache = TradeCache(prepare_arrays(dev, ddev), version, cost_model=costs, cache_dir=out / "cache")
     cache.set_market_regime(*market_up_series(dev), "eqw-ma200")
     base = LadderConfig(rung=a.rung, max_positions=a.max_positions, max_new_per_day=a.max_new,
                         universe_mode="membership" if mem is not None else "top_liquidity", universe_top_n=a.top_n)
@@ -93,10 +108,11 @@ def main(argv=None) -> dict:
     cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev)
     hold = None
     if a.open_holdout:
-        full = TradeCache(prepare_arrays(bars, divs), load.version + "-full", cost_model=costs)
+        full = TradeCache(prepare_arrays(bars, divs), version + "-full", cost_model=costs)
         full.set_market_regime(*market_up_series(bars), "eqw-ma200")
-        hold = run_holdout(fm, full, bars, mem, cat, reg, load.version)
-    meta = {"data": load.version, "catalog": CATALOG_VERSION, "universe": base.universe_mode, "top_n": a.top_n,
+        hold = run_holdout(fm, full, bars, mem, cat, reg, version)
+    meta = {"data": version, "catalog": CATALOG_VERSION, "universe": base.universe_mode, "top_n": a.top_n,
+            "timeframe": a.resample or a.timeframe, "clock_shift": a.clock_shift,
             "symbols_loaded": len(load.symbols), "symbols_skipped": load.skipped, "audit": audit,
             "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()}}
     pkg = build_evidence(cat, hold, meta)

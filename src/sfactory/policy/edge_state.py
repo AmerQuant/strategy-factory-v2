@@ -16,6 +16,7 @@ Modes
 
 The persistence test (12.4) decides whether any of this is worth having: a mechanism is accepted only if the
 state is persistent AND its daily OOS Sharpe beats `always` with a paired block-bootstrap CI above zero.
+Works on daily and intraday bars (see docs/spec/intraday.md).
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ import numpy as np
 import polars as pl
 
 from sfactory.data.universe import universe_at
+from sfactory.evaluation.ablation import aligned_daily
 from sfactory.metrics.core import equity_stats, trade_stats
 from sfactory.policy.ladder import CODE_VERSION, LadderConfig, _FoldView, decide_fold
 from sfactory.portfolio.capacity import simulate_capacity
@@ -116,7 +118,7 @@ def feature_at_signals(cache, sym: str, trades: pl.DataFrame, act: ActivationCon
     if len(trades) == 0:
         return np.zeros(0)
     a = cache.arrays[sym]
-    idx = np.searchsorted(a.dates, trades["signal_date"].to_numpy().astype("datetime64[D]"))
+    idx = np.searchsorted(a.dates, trades["signal_date"].to_numpy().astype(a.dates.dtype))
     return _feature(cache, sym, act)[np.clip(idx, 0, len(a.dates) - 1)]
 
 
@@ -310,19 +312,6 @@ def state_persistence(fm: FoldManager, cache, bars_dev, membership, cfg: LadderC
 
 
 # --- ablation report ------------------------------------------------------------------------------------
-def aligned_daily(trade_sets: list[pl.DataFrame], start, end) -> np.ndarray:
-    cal = pl.DataFrame({"exit_date": pl.date_range(start, end, "1d", eager=True)}).filter(
-        pl.col("exit_date").dt.weekday() <= 5)
-    cols = []
-    for t in trade_sets:
-        if len(t) == 0:
-            cols.append(np.zeros(len(cal)))
-            continue
-        agg = t.group_by("exit_date").agg(pl.col("net_pnl").sum())
-        cols.append(cal.join(agg, on="exit_date", how="left").sort("exit_date")["net_pnl"].fill_null(0.0).to_numpy())
-    return np.column_stack(cols)
-
-
 def run_edge_state(fm: FoldManager, cache, bars_dev, membership, cfg: LadderConfig,
                    base: ActivationConfig | None = None, modes=MODES, registry=None,
                    n_boot: int = 1000, block: int = 20) -> dict:
