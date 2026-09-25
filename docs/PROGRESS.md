@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 155 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 165 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -36,6 +36,7 @@
 - package 3 (diverse families, design 13.2): VOL (vol_spike, squeeze), XS (cross-sectional momentum via the capacity ranker), CAL (turn of month), EV (post ex-dividend, index addition); SeriesCtx, BRK/HOLD exit libraries, separate catalogue version, run_real --diverse (docs/spec/families.md)
 - package 4 (sizing): per-trade vol targeting with a fast shock leg, gross exposure cap, daily vol-target and drawdown-brake overlays, sizing ablation with the paired-bootstrap Sharpe gate (docs/spec/sizing.md)
 - package 5 (speed, ADR-0004): stacked per-setting time slicing and memoised universe (about 3-5x on 200 symbols, single process), parallel trade-cache precompute with a spawn process pool, run_real --workers, scripts/bench_speed.py
+- package 6 (broker bridge): order/fill contract, netting across rows with internal crossing, row books, reconciliation, simulated broker, research-parity paper planner (placeholder-bar method, exact trade parity tested), MT5 adapter for netting and hedging accounts with dry run (docs/spec/broker.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -43,13 +44,13 @@
 3. ~~New edge families~~ (done; gap rows and announcement-date events open, event rows wait for dividends / membership data)
 4. ~~Advanced sizing~~ (done; cross-row risk budget in the combined policy and run_real integration open)
 5. ~~Parallelism and speed~~ (done; measure with scripts/bench_speed.py on the owner's machine)
-6. MT5 bridge as far as possible: order/fill contract, netting across rows, daily reconciliation, paper mode with a simulated broker
+6. ~~MT5 bridge~~ (done as far as possible without a terminal; daily paper job script, MT5 deal costs, paper dividends open)
 7. Moneta cost converter v1 → v2 CSV
 
 ## Next on the owner's machine
 1. First real run: `scripts/run_real.py` on the v1 store (bars ready); then membership + dividends files when located (or `fetch_alpaca_dividends.py`)
 2. Add `uv sync --group crosscheck` to CI (needs a workflow edit by the owner)
-3. Broker bridge (P11) live connection test — needs the owner's machine
+3. Broker bridge live test: `MT5Broker(dry_run=True).connect(...)` on the Moneta demo account, check `positions()` and the dry-run requests, then one small real order
 4. Finding to revisit on real data: every MR row fails the 1-bar delay warning on synthetic data (short-horizon MR is delay-sensitive) — check on real bars before going live
 5. Run `run_edge_state` per accepted row on real data: the persistence verdict decides whether any mechanism is used
 6. Hourly run: `run_real.py --timeframe 1H` (and `--resample 4h --clock-shift 7h` for the broker-aligned 4H set)
