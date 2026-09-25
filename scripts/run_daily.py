@@ -90,6 +90,11 @@ def main(argv=None) -> dict:
     phase = a.phase or ("both" if a.broker == "sim" else None)
     if phase is None:
         raise SystemExit("--phase open|close is required with --broker mt5")
+    done = st.last_day if phase in ("both", "close") else st.filled_day
+    if not a.day and done is not None and done >= str(today):       # no new data (holiday, early rerun)
+        out = {"day": str(today), "phase": phase, "noop": f"{today} already processed"}
+        print(json.dumps(out))
+        return out
     if a.broker == "sim":
         broker = SimulatedBroker(costs)
         broker.net = dict(st.sim_net)
