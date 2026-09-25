@@ -4,6 +4,7 @@ Exit libraries (design 7.4): MR - prev_high (neutral), time, rsi_above, optional
 TF - reverse (neutral, the method's opposite state), ATR trailing stop, time;
 BRK (breakouts without an opposite state, e.g. the volatility squeeze) - ATR trailing stop (neutral), time;
 HOLD (time-driven edges: cross-sectional momentum, calendar, events) - a fixed holding period per method.
+Intraday: any exit can carry `flat_eod` (no position held across the session close).
 Filter library (design 7.5): above_ma, vol_below (ATR% percentile), and the structural `market_up`
 (market proxy above its MA; fixed, never selected in-fold - design ch. 12).
 """
@@ -24,11 +25,30 @@ class ExitSpec:
     target_atr: float = 0.0
     stop_atr: float = 0.0
     trail_atr: float = 0.0
+    flat_eod: bool = False       # intraday: also exit at the open of the day's last bar (flat before the close)
 
     @property
     def id(self) -> str:
-        return (f"{self.kind}:{self.param:g}:h{self.max_hold}:t{self.target_atr:g}:s{self.stop_atr:g}"
+        base = (f"{self.kind}:{self.param:g}:h{self.max_hold}:t{self.target_atr:g}:s{self.stop_atr:g}"
                 f":tr{self.trail_atr:g}")
+        return base + (":eod" if self.flat_eod else "")
+
+
+def session_exit_signal(dates: np.ndarray) -> np.ndarray:
+    """Intraday session exit (`ExitSpec.flat_eod`): signal on the bar that starts one bar before the session's
+    last bar, so the engine's next-open fill closes the position at the open of the last bar. Pure session
+    calendar (time of day of the bar start vs the latest bar start seen, minus one bar): known in advance, the
+    same in research and live planning (it does not look at the end of the array), never uses prices. Early-close
+    days are not modelled. All False for daily bars."""
+    if len(dates) < 3 or dates.dtype == np.dtype("datetime64[D]"):
+        return np.zeros(len(dates), dtype=np.bool_)
+    day = dates.astype("datetime64[D]")
+    tod = dates - day
+    same = day[1:] == day[:-1]
+    steps = (dates[1:] - dates[:-1])[same]
+    if len(steps) == 0:
+        return np.zeros(len(dates), dtype=np.bool_)
+    return tod == tod.max() - np.median(steps.astype(np.int64)).astype(steps.dtype)
 
 
 NEUTRAL_MR_EXIT = ExitSpec("prev_high", 0, 5)

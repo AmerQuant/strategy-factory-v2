@@ -6,8 +6,9 @@ straddle midnight of that clock (`check_no_straddle`); otherwise the last bar "b
 
 Broker alignment: brokers build 4H / daily bars on their own day (MT5 servers: 17:00 New York = 00:00 server
 time). `resample_bars(..., clock_shift="7h")` moves the clock so that day boundary is midnight; windows are then
-anchored to that midnight and never straddle it. The whole run must use the same clock (DPs, rollover days for
-swap, calendar days). `alignment_variants` produces the sensitivity set required by the design.
+anchored to that midnight and never straddle it. A fixed shift is exact for half the year only (New York DST);
+`clock_shift="ny"` uses the DST-aware `broker_clock` instead. The whole run must use the same clock (DPs,
+rollover days for swap, calendar days). `alignment_variants` produces the sensitivity set required by the design.
 """
 from __future__ import annotations
 
@@ -29,11 +30,24 @@ def is_intraday(bars: pl.DataFrame) -> bool:
 
 
 def shift_clock(bars: pl.DataFrame, clock_shift: str) -> pl.DataFrame:
-    """Move timestamps by `clock_shift` (e.g. '7h': UTC 17:00 -> 00:00 for a NY-close broker day)."""
+    """Move timestamps by `clock_shift` (e.g. '7h': UTC 17:00 -> 00:00 for a NY-close broker day).
+    `clock_shift="ny"` uses the DST-aware `broker_clock` (17:00 New York = 00:00 all year)."""
     if clock_shift in ("", "0h"):
         return bars
+    if clock_shift == "ny":
+        return broker_clock(bars)
     sign = -1 if clock_shift.startswith("-") else 1
     return bars.with_columns(pl.col("date") + sign * _dur(clock_shift.lstrip("-+")))
+
+
+def broker_clock(bars: pl.DataFrame, tz: str = "America/New_York", rollover: str = "17:00") -> pl.DataFrame:
+    """DST-aware broker clock: naive UTC bar starts -> the clock whose midnight is `rollover` in `tz` (MT5 servers:
+    17:00 New York = 00:00 all year, i.e. UTC+2 in winter and UTC+3 in summer). Use instead of a fixed
+    `clock_shift`, which is exact for half the year only."""
+    h, m = (int(x) for x in rollover.split(":"))
+    shift = timedelta(hours=24 - h) - timedelta(minutes=m)
+    local = pl.col("date").dt.replace_time_zone("UTC").dt.convert_time_zone(tz).dt.replace_time_zone(None)
+    return bars.with_columns((local + shift).alias("date"))
 
 
 def resample_bars(bars: pl.DataFrame, every: str, clock_shift: str = "0h") -> pl.DataFrame:
