@@ -1,0 +1,59 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans-condensed/500.css";
+@import "@fontsource/ibm-plex-sans-condensed/600.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. Colour encodes data: one fixed hue per edge family, green / red for sign, one signal accent. */
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, sans-serif;
+
+  --color-bg: #f5f7fa;
+  --color-surface: #ffffff;
+  --color-sunken: #eef1f5;
+  --color-line: #dde3ea;
+  --color-ink: #152235;
+  --color-muted: #5b6b80;
+  --color-accent: #0891b2;
+  --color-accent-soft: #e0f5fa;
+  --color-pos: #0e9f6e;
+  --color-neg: #d92d20;
+  --color-warn: #dc6803;
+
+  --color-fam-mr: #2e90fa;
+  --color-fam-tf: #f79009;
+  --color-fam-vol: #9e77ed;
+  --color-fam-xs: #12b76a;
+  --color-fam-cal: #ee46bc;
+  --color-fam-ev: #f04438;
+  --color-fam-ens: #667085;
+}
+
+.dark {
+  --color-bg: #0e1a2b;
+  --color-surface: #13233a;
+  --color-sunken: #0b1524;
+  --color-line: #22354f;
+  --color-ink: #e6edf5;
+  --color-muted: #93a4ba;
+  --color-accent: #22c3e6;
+  --color-accent-soft: #10324a;
+  --color-pos: #32d583;
+  --color-neg: #f97066;
+  --color-warn: #fdb022;
+}
+
+html, body, #root { height: 100%; }
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1, "cv11" 1;
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
