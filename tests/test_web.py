@@ -44,6 +44,10 @@ def test_documents_are_validated_against_the_platform(client):
     assert c.post("/api/config/policies", json=pol).status_code == 201
     badact = {"id": "p2", "name": "P", "entries": [{"config": ROW, "activation": {"mode": "x", "nope": 1}}]}
     assert c.post("/api/config/policies", json=badact).status_code == 422
+    ov = {"id": "p3", "name": "P", "entries": [{"config": ROW, "overlay": {"dd_limit": 0.15, "cut": 0.5}}]}
+    assert c.post("/api/config/policies", json=ov).status_code == 201
+    badov = {"id": "p4", "name": "P", "entries": [{"config": ROW, "overlay": {"nope": 1}}]}
+    assert c.post("/api/config/policies", json=badov).status_code == 422
     rb = {"id": "rb", "name": "Budget", "max_weight": 0.3, "family_cap": 0.6, "target_vol_ann": 0.1}
     assert c.post("/api/config/risk_budgets", json=rb).status_code == 201
     assert c.post("/api/config/risk_budgets", json={**rb, "id": "rb2", "max_weight": 3}).status_code == 422
