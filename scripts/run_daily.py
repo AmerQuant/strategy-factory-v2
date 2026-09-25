@@ -30,6 +30,7 @@ from sfactory.data.contracts import DIVIDENDS_SCHEMA
 from sfactory.data.regime import market_up_series
 from sfactory.data.sfac_store import load_store
 from sfactory.engine.cache import prepare_arrays
+from sfactory.forward import alerts, killswitch
 from sfactory.forward.daily import DailyState, close_phase, new_state, open_phase
 from sfactory.forward.paper import arrays_upto
 
@@ -44,6 +45,22 @@ def policy_rows(path: str) -> list:
     if not rows:
         raise SystemExit("the policy has no rows")
     return rows
+
+
+def guard(st: DailyState, day, reconciled_now, a, source: str) -> str | None:
+    """Kill switch before planning: trip it on a breached limit, report mismatches; returns the halt mode."""
+    kpath, epath = killswitch.kill_file(a.kill_file), alerts.events_file(a.events_file)
+    k = killswitch.load(kpath)
+    if reconciled_now is False:
+        alerts.emit(epath, "warning", source, f"{day}: book and broker positions differ", state=a.state)
+    reason = killswitch.breached(st, k.limits, day, reconciled_now)
+    if reason and not k.active:
+        if kpath is not None:
+            k = killswitch.trip(kpath, reason, by=source)
+        else:
+            k.active, k.reason = True, reason
+        alerts.emit(epath, "critical", source, f"kill switch tripped: {reason}", state=a.state, mode=k.mode)
+    return k.halt
 
 
 def parse(argv=None):
@@ -67,6 +84,8 @@ def parse(argv=None):
     ap.add_argument("--mt5-server")
     ap.add_argument("--symbol-map")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--kill-file", help="kill switch file (default: SF_KILL_FILE, set by the dashboard / scheduler)")
+    ap.add_argument("--events-file", help="event log for alerts (default: SF_EVENTS_FILE)")
     return ap.parse_args(argv)
 
 
@@ -112,8 +131,9 @@ def main(argv=None) -> dict:
         if hasattr(broker, "deal_costs"):                       # MT5: realised commission / fee / swap
             rep["broker_costs"] = broker.deal_costs(today)
     if phase in ("both", "close"):
+        rep["halt"] = guard(st, today, rep.get("open", {}).get("reconciled"), a, "run_daily")
         regime = (*market_up_series(hist), "eqw-ma200")
-        rep["close"] = close_phase(st, arrays, hist, mem, today, costs, regime, load.version)
+        rep["close"] = close_phase(st, arrays, hist, mem, today, costs, regime, load.version, halt=rep["halt"])
         rec = rep.get("open", {"reconciled": None})
         st.log.append({"day": str(today), "reconciled": rec["reconciled"], "orders": rep["close"]["orders"],
                        "open_positions": rep["close"]["open_positions"]})

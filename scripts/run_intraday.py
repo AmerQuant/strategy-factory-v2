@@ -31,12 +31,13 @@ from sfactory.data.regime import market_up_series
 from sfactory.data.resample import check_no_straddle, resample_bars, shift_clock
 from sfactory.data.sfac_store import load_store
 from sfactory.engine.cache import prepare_arrays
+from sfactory.forward import alerts
 from sfactory.forward.daily import DailyState, _d, bar_step, new_state
 
 try:
-    from run_daily import policy_rows
+    from run_daily import guard, policy_rows
 except ImportError:                                   # imported as scripts.run_intraday
-    from scripts.run_daily import policy_rows
+    from scripts.run_daily import guard, policy_rows
 
 
 def parse(argv=None):
@@ -62,6 +63,8 @@ def parse(argv=None):
     ap.add_argument("--mt5-server")
     ap.add_argument("--symbol-map")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--kill-file", help="kill switch file (default: SF_KILL_FILE, set by the dashboard / scheduler)")
+    ap.add_argument("--events-file", help="event log for alerts (default: SF_EVENTS_FILE)")
     return ap.parse_args(argv)
 
 
@@ -117,8 +120,13 @@ def main(argv=None) -> dict:
     regime = (*market_up_series(bars), "eqw-ma200")        # causal: flags at t use bars up to t only
     reports = []
     for bar in todo:
+        halt = guard(st, bar, None, a, "run_intraday")                  # the switch is re-read before every bar
         rep = bar_step(st, arrays, bars.filter(pl.col("date") <= bar), mem, bar, broker, live=live, cost_model=costs,
-                       regime=regime, data_version=version)
+                       regime=regime, data_version=version, halt=halt)
+        if rep.get("reconciled") is False:                               # now in the log: warn and re-check at once
+            alerts.emit(alerts.events_file(a.events_file), "warning", "run_intraday",
+                        f"{bar}: book and broker positions differ", state=a.state)
+            guard(st, bar, None, a, "run_intraday")
         st.save(a.state)                                    # restartable after every bar
         reports.append(rep)
         if a.report_dir:
