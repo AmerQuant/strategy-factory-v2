@@ -25,7 +25,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sfactory.forward import alerts
+from sfactory.forward import alerts, notify
 from sfactory.web.config_store import ConfigStore
 from sfactory.web.jobs import JobManager
 from sfactory.web.schemas import Schedule
@@ -161,9 +161,20 @@ class SchedulerService:
             t.start()
             st["last_run"] = run["id"]
         _write(self.dir / "state.json", self.state)
+        self._notify()
         _write(self.dir / "heartbeat.json", {"at": now.isoformat(timespec="seconds"), "pid": os.getpid(),
                                              "schedules": len(docs)})
         return events
+
+    def _notify(self) -> None:
+        """Send new events to Telegram when configured; a failure never stops scheduling (it is retried)."""
+        try:
+            n = notify.from_settings(self.config_dir, self.store.settings())
+            if n is not None:
+                n.flush()
+        except Exception as e:  # noqa: BLE001 - notifications must never break the scheduler
+            (self.dir / "notify_error.txt").write_text(f"{self.clock().isoformat()} {type(e).__name__}: {e}\n",
+                                                       encoding="utf-8")
 
     def join(self, timeout: float = 60) -> None:
         for t in list(self.threads.values()):

@@ -45,6 +45,10 @@ class PlatformSettings(BaseModel):
     workers: int = 1
     capital: float = 100_000.0
     timezone: str = "America/New_York"
+    telegram_chat_id: str = ""                           # the bot token stays in SF_TELEGRAM_TOKEN
+    telegram_min_level: Literal["critical", "warning", "info"] = "warning"
+    telegram_proxy: str = ""                             # HTTP proxy, e.g. http://127.0.0.1:10809
+    telegram_api: str = ""                               # empty = https://api.telegram.org
 
 
 class Catalogue(Doc):
