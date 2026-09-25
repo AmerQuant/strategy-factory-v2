@@ -83,7 +83,8 @@ class DayPlan:
 
 
 def plan_day(known: TradeCache, book: dict, day: date, books: dict[str, RowBook], exit_only: set = frozenset(),
-             lot_step: float = 1.0, opened_with: dict | None = None, weights: dict | None = None) -> DayPlan:
+             lot_step: float = 1.0, opened_with: dict | None = None, weights: dict | None = None,
+             row_scale: dict | None = None) -> DayPlan:
     """Row orders for the next open from everything known at `day`'s close.
 
     known: TradeCache over arrays through `day` (with regime / index events as in research).
@@ -93,9 +94,11 @@ def plan_day(known: TradeCache, book: dict, day: date, books: dict[str, RowBook]
     when the row's parameters changed or the row left the book. Default: the row's current entry.
     weights: row -> {symbol: weight} from the fast clock (policy.edge_state): 0 = no new entries for the symbol,
     other values scale the quantity; rows or symbols without a weight trade at 1. Exits are never affected.
+    row_scale: row -> multiplier for all new entries of the row (daily sizing overlays); 0 = no new entries.
     """
     opened_with = opened_with or {}
     weights = weights or {}
+    row_scale = row_scale or {}
     ext = TradeCache({s: extend_one_bar(a) for s, a in known.arrays.items() if a.dates[-1] == np.datetime64(day)},
                      f"{known.data_version}|live-{day}", known.notional, cost_model=known.cost_model)
     if known._regime_dates is not None:
@@ -136,6 +139,9 @@ def plan_day(known: TradeCache, book: dict, day: date, books: dict[str, RowBook]
         held = books[rid].positions
         cands = []
         rw = weights.get(rid, {})
+        scale = float(row_scale.get(rid, 1.0))
+        if scale <= 0:
+            continue
         for sym in be.eligible:
             if sym in held or sym not in ext.arrays or rw.get(sym, 1.0) <= 0:
                 continue
@@ -152,7 +158,7 @@ def plan_day(known: TradeCache, book: dict, day: date, books: dict[str, RowBook]
             notional = known.notional
         for _, sym in cands:
             a = known.arrays[sym]
-            w = float(rw.get(sym, 1.0))
+            w = float(rw.get(sym, 1.0)) * scale
             if getattr(cfg, "sizing", "fixed") == "vol":
                 v = float(np.fmax(trailing_vol(a.sig_close, cfg.vol_window)[-1],
                                   trailing_vol(a.sig_close, cfg.vol_fast)[-1] if cfg.vol_fast > 1 else np.nan))
@@ -225,8 +231,9 @@ class PaperTrader:
         return rec
 
     def plan(self, known: TradeCache, book: dict, day: date, exit_only: set = frozenset(),
-             lot_step: float = 1.0, opened_with: dict | None = None, weights: dict | None = None) -> DayPlan:
-        p = plan_day(known, book, day, self.books, exit_only, lot_step, opened_with, weights)
+             lot_step: float = 1.0, opened_with: dict | None = None, weights: dict | None = None,
+             row_scale: dict | None = None) -> DayPlan:
+        p = plan_day(known, book, day, self.books, exit_only, lot_step, opened_with, weights, row_scale)
         self.pending = list(p.orders)
         return p
 
