@@ -239,6 +239,10 @@ def create_app(config_dir: str | Path, static_dir: str | Path | None = None, tok
         except FileNotFoundError as e:
             nf(e)
 
+    @app.get("/api/scheduler")
+    def scheduler():
+        return readers.scheduler_summary(store.root)
+
     # --- jobs ------------------------------------------------------------------------------------------------
     @app.get("/api/jobs")
     def list_jobs():
