@@ -135,6 +135,32 @@ class TradeCache:
         self._store[key] = df
         return df
 
+    def key_for(self, symbol: str, entry_spec: EntrySpec, exit_spec: ExitSpec,
+                filters: tuple[FilterSpec, ...] = (), delay: int = 0) -> tuple:
+        """The cache key of `trades(...)`; also used by the parallel precompute (engine/parallel.py)."""
+        fkey = tuple(f.id for f in filters)
+        needs_regime = any(f.kind == "market_up" for f in filters)
+        key = ("tr", symbol, entry_spec.id, exit_spec.id, fkey,
+               self._regime_id if needs_regime else "-", self.data_version, self.cost_model.fingerprint(), delay)
+        if entry_spec.method == "index_add":
+            key = key + (self._events_id,)
+        return key
+
+    def merge(self, items) -> int:
+        """Add (key, frame) pairs computed elsewhere (worker processes); existing keys win. Writes Parquet when
+        the cache is disk-backed. Returns the number of frames added."""
+        added = 0
+        for key, df in items:
+            if key in self._store:
+                continue
+            self._store[key] = df
+            added += 1
+            path = self._path(key)
+            if path is not None and not path.exists():
+                df.write_parquet(path)
+        self.merged = getattr(self, "merged", 0) + added
+        return added
+
     def rsi_mr(self, symbol: str, period: int, threshold: float, direction: int = 1, max_hold: int = 5):
         key = ("rsi_mr", symbol, period, threshold, direction, max_hold, self.data_version,
                self.cost_model.fingerprint())
@@ -161,12 +187,7 @@ class TradeCache:
 
         delay > 0 postpones the entry by that many bars (robustness test: execution delay).
         """
-        fkey = tuple(f.id for f in filters)
-        needs_regime = any(f.kind == "market_up" for f in filters)
-        key = ("tr", symbol, entry_spec.id, exit_spec.id, fkey,
-               self._regime_id if needs_regime else "-", self.data_version, self.cost_model.fingerprint(), delay)
-        if entry_spec.method == "index_add":
-            key = key + (self._events_id,)
+        key = self.key_for(symbol, entry_spec, exit_spec, filters, delay)
 
         def compute():
             a = self.arrays[symbol]
