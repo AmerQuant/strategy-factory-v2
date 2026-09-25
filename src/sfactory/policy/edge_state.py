@@ -33,6 +33,7 @@ from sfactory.evaluation.ablation import aligned_daily
 from sfactory.metrics.core import equity_stats, trade_stats
 from sfactory.policy.ladder import CODE_VERSION, LadderConfig, _FoldView, decide_fold
 from sfactory.portfolio.capacity import simulate_capacity
+from sfactory.portfolio.sizing import apply_row_sizing
 from sfactory.signals.trendiness import feature_series
 from sfactory.stats.core import sharpe_diff_ci
 from sfactory.timeline.folds import FoldManager
@@ -229,6 +230,7 @@ def run_activation(fm: FoldManager, cache, bars_dev: pl.DataFrame, membership, c
     if cfg.max_positions > 0 and len(stitched):
         stitched = simulate_capacity(stitched, cfg.max_positions, cfg.max_new_per_day, cfg.capital,
                                      cache.notional, cfg.ranker)
+    stitched = apply_row_sizing(stitched, cache, cfg)
     res.oos_trades = stitched
     subs = [s for d in res.decisions for s in d["sub_dps"]]
     exposure = float(np.mean([s["n_active"] / s["n_eligible"] for s in subs if s["n_eligible"]])) if subs else 0.0
