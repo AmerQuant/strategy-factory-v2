@@ -18,7 +18,7 @@ Synthetic FX-like market (12 symbols, 6 mean-reverting + 6 random walk), RSI(2) 
 | pooled (all symbols, no selection) | 2.34 |
 Selection has real skill against random-N and raises per-trade expectancy, but here it does not beat trading all symbols pooled — fewer symbols means less diversification. This is exactly the comparison the analyst must see before choosing a symbol-based row over a pooled one; both are trials.
 
-Not yet modelled for FX: swap / rollover costs per symbol and side (add to `CostModel` once the broker's swap table is available).
+FX / index / metal costs (spread, commission, slippage, swap per side) come from the MT5 export: `docs/spec/mt5_costs.md`; the CFD catalogue built on `fx_rows`' rules is `cfd_rows` (`docs/spec/cfd_markets.md`).
 
 ## Tradable ensemble rows (design 13.3)
 - `EnsembleConfig(members)`: members of one family × direction, each with its own in-fold selection; capital split equally (capacity mode: capital / k per member; cell mode: pnl / k). One registry trial per ensemble.
