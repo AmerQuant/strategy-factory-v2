@@ -91,7 +91,7 @@ export function Tag({ tone = "neutral", children }: { tone?: "neutral" | "pos" |
     neutral: "bg-sunken text-muted", pos: "bg-pos/12 text-pos", neg: "bg-neg/12 text-neg",
     warn: "bg-warn/15 text-warn", accent: "bg-accent-soft text-accent",
   }[tone];
-  return <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium", t)}>{children}</span>;
+  return <span className={cn("inline-flex items-center whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium", t)}>{children}</span>;
 }
 
 export function Signed({ value, children }: { value: number | null | undefined; children: ReactNode }) {
