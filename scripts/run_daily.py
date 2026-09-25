@@ -103,7 +103,9 @@ def main(argv=None) -> dict:
     rep: dict = {"day": str(today), "phase": phase, "data": load.version}
     if phase in ("both", "open"):
         known = arrays if phase == "both" else arrays_upto(arrays, today)
-        rep["open"] = open_phase(st, known, today, broker)
+        rep["open"] = open_phase(st, known, today, broker, costs)
+        if hasattr(broker, "deal_costs"):                       # MT5: realised commission / fee / swap
+            rep["broker_costs"] = broker.deal_costs(today)
     if phase in ("both", "close"):
         regime = (*market_up_series(hist), "eqw-ma200")
         rep["close"] = close_phase(st, arrays, hist, mem, today, costs, regime, load.version)
