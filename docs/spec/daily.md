@@ -30,6 +30,23 @@ computes per-symbol weights with the research `decide_sub` on the shadow trades 
 other weights scale the quantity; exits are never affected. Tested: the live number of active symbols equals the
 research `run_activation` at all 24 sub-DPs of a two-year replay.
 
+## Daily sizing overlays in the live book
+A policy entry may also carry `"overlay"` (only after the sizing ablation accepted it for that row):
+```
+{"config": {...}, "overlay": {"target_vol_daily": 800, "lookback": 63, "lev_max": 2.0, "min_obs": 20,
+                              "dd_limit": 0.15, "cut": 0.5, "resume": 0.5}}
+```
+`target_vol_daily` (pnl units per day) switches the vol-target overlay on, `dd_limit` (fraction of the row's
+capital) the drawdown brake; unknown fields are refused. At every close the job builds the row's realised net pnl
+per business day (exit dates, zeros elsewhere, from the first DP) and evaluates the research functions
+`vol_target_daily` and `drawdown_brake` one step past it: the factor research would apply to tomorrow. Tomorrow's
+new entries of the row are multiplied by leverage x brake (0 = no new entries); exits and open positions are never
+resized. The factors are in the close report (`overlays`) and the state (`row_scale`).
+Tested: the factor equals the research overlay one day ahead at every step of a 400-day series; with the brake
+engaged the planned entry quantities are exactly the unbraked ones times `cut`.
+Note: research applies the overlay to the realised daily pnl stream, the live book to new entries; they agree on
+when and how much the row is scaled, not on the exact pnl of positions already open when the factor changes.
+
 ## Commands
 ```
 uv run python scripts/run_daily.py --init --state state.json --policy holdout.json --first-dp 2026-10-01
@@ -42,4 +59,3 @@ The MT5 password comes from `SF_MT5_PASSWORD`. Reports: `--report-dir` gets `<da
 ## Not yet
 - The store must be updated before each close run (v1's data refresh); the job does not download.
 - Scheduling (Windows Task Scheduler at the open and after the close) is the owner's setup.
-- Daily sizing overlays (vol target, drawdown brake) are not applied in the live book yet (trade-level vol sizing is).
