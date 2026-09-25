@@ -6,7 +6,9 @@ Per trading day:
 2. close phase - at a new decision point (every `dp_months`, first day of the month) rebuild the book with the
    research selector (`decide_book`, data strictly before the DP), then plan the next open with the
    research-parity planner (`forward.paper.plan_day`). Every open position exits by the setting it was opened
-   with (`opened_with`), even when its row changed at the DP or left the book;
+   with (`opened_with`), even when its row changed at the DP or left the book. Rows that carry an accepted
+   fast-clock mechanism (policy entry {"config", "activation"}) get per-symbol weights at every sub-DP from the
+   same `decide_sub` as research; a weight only gates / scales new entries;
 3. persist everything in a JSON state file, so the job is restartable and auditable (every day appends a log line).
 
 The state holds the frozen policy (row configs as dicts, as `evaluation.holdout.freeze_policy` writes them), the
@@ -20,14 +22,17 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 
 from sfactory.broker.orders import Order, RowBook, VirtualPosition
 from sfactory.engine.cache import SymbolArrays, TradeCache
-from sfactory.forward.live import BookEntry, book_diff, decide_book
-from sfactory.forward.paper import PaperTrader, arrays_upto
+from sfactory.forward.live import BookEntry, book_diff, decide_book, live_fold
+from sfactory.forward.paper import PaperTrader, _exit_spec, arrays_upto
+from sfactory.policy.edge_state import ActivationConfig, calibrate_trendiness, decide_sub
 from sfactory.policy.ladder import LadderConfig
+from sfactory.signals.methods import EntrySpec
 from sfactory.signals.specs import ExitSpec, FilterSpec
 from sfactory.timeline.folds import FoldConfig, FoldManager, add_months
 
@@ -48,6 +53,19 @@ def config_from_dict(d: dict):
     if x.get("thresholds") is not None:
         x["thresholds"] = tuple(x["thresholds"])
     return LadderConfig(**x)
+
+
+def policy_entries(policy: list) -> list[tuple]:
+    """(row config, ActivationConfig or None) per policy entry. An entry is a config dict (as `asdict` writes it)
+    or {"config": {...}, "activation": {...}} for a row that trades with an accepted fast-clock mechanism."""
+    out = []
+    for e in policy:
+        if isinstance(e, dict) and "config" in e:
+            act = e.get("activation")
+            out.append((config_from_dict(e["config"]), ActivationConfig(**act) if act else None))
+        else:
+            out.append((config_from_dict(e), None))
+    return out
 
 
 def _d(s):
@@ -79,6 +97,10 @@ class DailyState:
     last_day: str | None = None
     sim_net: dict = field(default_factory=dict)        # simulated broker net positions (paper mode)
     filled_day: str | None = None                      # last day whose open was executed
+    weights: dict = field(default_factory=dict)        # fast clock: row -> {symbol: weight}
+    act_state: dict = field(default_factory=dict)      # fast clock: row -> previous weights (hysteresis)
+    trend_cal: dict = field(default_factory=dict)      # fast clock: row -> in-fold trendiness calibration
+    last_sub_dp: str | None = None
 
     def to_json(self) -> dict:
         ow = _book_to_json({f"{r}|{s}": b for (r, s), b in self.opened_with.items()})
@@ -90,7 +112,8 @@ class DailyState:
                                          for t in b.closed]} for r, b in self.books.items()},
                 "pending": [{**asdict(o), "signal_date": str(o.signal_date)} for o in self.pending],
                 "log": self.log, "last_day": self.last_day, "sim_net": self.sim_net,
-                "filled_day": self.filled_day}
+                "filled_day": self.filled_day, "weights": self.weights, "act_state": self.act_state,
+                "trend_cal": self.trend_cal, "last_sub_dp": self.last_sub_dp}
 
     @classmethod
     def from_json(cls, d: dict) -> DailyState:
@@ -110,7 +133,8 @@ class DailyState:
               for k, v in ow.items()}
         return cls(d["policy"], d["fold"], d["last_dp"], _book_from_json(d["book"]), ow, books,
                    [Order(**{**o, "signal_date": _d(o["signal_date"])}) for o in d["pending"]],
-                   d["log"], d["last_day"], d.get("sim_net", {}), d.get("filled_day"))
+                   d["log"], d["last_day"], d.get("sim_net", {}), d.get("filled_day"), d.get("weights", {}),
+                   d.get("act_state", {}), d.get("trend_cal", {}), d.get("last_sub_dp"))
 
     def save(self, path: str | Path) -> None:
         p = Path(path)
@@ -127,9 +151,19 @@ class DailyState:
         return pl.DataFrame(rows) if rows else pl.DataFrame()
 
 
+def _entry(r):
+    if isinstance(r, dict):
+        return r
+    if isinstance(r, tuple):
+        cfg, act = r
+        return {"config": asdict(cfg), "activation": asdict(act) if act is not None else None}
+    return asdict(r)
+
+
 def new_state(policy_rows: list, first_dp: date, dp_months: int = 6, is_years: int = 3,
               data_start: date = date(1990, 1, 1)) -> DailyState:
-    return DailyState([asdict(r) if not isinstance(r, dict) else r for r in policy_rows],
+    """policy_rows: configs, config dicts, or (config, ActivationConfig | None) pairs."""
+    return DailyState([_entry(r) for r in policy_rows],
                       {"data_start": str(data_start), "first_dp": str(first_dp), "dp_months": dp_months,
                        "is_years": is_years})
 
@@ -151,6 +185,47 @@ def due_dp(state: DailyState, today: date) -> date | None:
     while add_months(nxt, step) <= today:            # catch up after a long pause
         nxt = add_months(nxt, step)
     return nxt
+
+
+def due_sub(state: DailyState, today: date, sub_months: int = 1) -> date | None:
+    """The fast-clock sub-DP to apply at `today`'s close: the latest of last_dp + k * sub_months that has come
+    and was not applied yet (the DP itself is the first sub-DP of its fold)."""
+    if state.last_dp is None:
+        return None
+    dp = date.fromisoformat(state.last_dp)
+    last = date.fromisoformat(state.last_sub_dp) if state.last_sub_dp else None
+    cands = [add_months(dp, k * sub_months) if k else dp for k in range(int(state.fold["dp_months"]) // sub_months)]
+    due = [c for c in cands if c <= today and (last is None or c > last)]
+    return max(due) if due else None
+
+
+def _fast_clock(state: DailyState, known: TradeCache, today: date, new_dp: bool) -> dict | None:
+    acts = {cfg.rid: act for cfg, act in policy_entries(state.policy) if act is not None}
+    acts = {r: a for r, a in acts.items() if r in state.book}
+    if not acts:
+        return None
+    fm = _fm(state)
+    if new_dp:
+        state.trend_cal = {}
+    sub = due_sub(state, today, min(a.sub_months for a in acts.values()))
+    if sub is None:
+        return None
+    out = {}
+    for rid, act in acts.items():
+        be = state.book[rid]
+        cfg = be.config
+        spec, ex = EntrySpec(cfg.method, be.threshold, cfg.direction), _exit_spec(cfg, be.exit_id)
+        per_sym = {s: known.trades(s, spec, ex, be.filters) for s in be.eligible if s in known.arrays}
+        if act.mode == "trendiness" and rid not in state.trend_cal:
+            state.trend_cal[rid] = calibrate_trendiness(known, fm, live_fold(fm, date.fromisoformat(state.last_dp)),
+                                                        per_sym, act)
+        prev = state.act_state.setdefault(rid, {})
+        w = decide_sub(fm, known, SimpleNamespace(dp=sub), per_sym, act, prev, state.trend_cal.get(rid))
+        prev.update(w)
+        state.weights[rid] = w
+        out[rid] = {"n_eligible": len(w), "n_active": sum(v > 0 for v in w.values())}
+    state.last_sub_dp = str(sub)
+    return {"sub_dp": str(sub), "rows": out}
 
 
 # --- the day ----------------------------------------------------------------------------------------------
@@ -186,13 +261,18 @@ def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: p
     report: dict = {"day": str(today)}
     dp = due_dp(state, today)
     if dp is not None:
-        configs = [config_from_dict(r) for r in state.policy]
+        configs = [cfg for cfg, _ in policy_entries(state.policy)]
         new = decide_book(_fm(state), known, bars_hist.filter(pl.col("date") <= today), membership, configs, dp)
         diff = book_diff(state.book, new)
-        state.book, state.last_dp = new, str(dp)
+        state.book, state.last_dp, state.last_sub_dp = new, str(dp), None
+        state.weights = {r: w for r, w in state.weights.items() if r in new}
         report["dp"] = {"dp": str(dp), **{k: diff[k] for k in ("added", "removed", "changed")}}
+    fc = _fast_clock(state, known, today, dp is not None)
+    if fc is not None:
+        report["fast_clock"] = fc
     pt = PaperTrader(None, books=state.books)
-    plan = pt.plan(known, state.book, today, lot_step=lot_step, opened_with=state.opened_with)
+    plan = pt.plan(known, state.book, today, lot_step=lot_step, opened_with=state.opened_with,
+                   weights=state.weights)
     for o in plan.orders:
         if o.intent == "open":
             state.opened_with[(o.row, o.symbol)] = state.book[o.row]
