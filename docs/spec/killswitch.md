@@ -1,7 +1,8 @@
 # Kill switch, risk limits and events
 
-Code: `forward/killswitch.py`, `forward/alerts.py`; used by `scripts/run_daily.py`, `scripts/run_intraday.py`, the
-scheduler and the dashboard (Paper & live page, banner on every page). Tests: `tests/test_killswitch.py`.
+Code: `forward/killswitch.py`, `forward/alerts.py`, `forward/notify.py`; used by `scripts/run_daily.py`,
+`scripts/run_intraday.py`, the scheduler and the dashboard (Paper & live page, banner on every page).
+Tests: `tests/test_killswitch.py`, `tests/test_notify.py`.
 
 ## The switch
 One file, `<admin config>/killswitch.json`. Every job the dashboard or the scheduler starts gets its path in
@@ -28,8 +29,23 @@ Limits are on realised pnl of the book; open-position (mark-to-market) losses do
 `<admin config>/events.jsonl`, one JSON line per event (at, level, source, message). Written by the jobs
 (critical: switch tripped; warning: book and broker differ), the scheduler (warning: missed run, failed chain) and
 the dashboard (critical: switch set; info: resumed). Shown on the Paper & live page, newest first.
-Sending events to a phone / mailbox is the next step; the channel is the owner's choice.
+
+## Notifications (Telegram)
+The scheduler service sends new events to one Telegram chat every tick (`forward/notify.py`).
+- Setup: create a bot with @BotFather, put its token in the environment variable `SF_TELEGRAM_TOKEN` on the machine
+  that runs the scheduler (and the dashboard, for its test button); send the bot a message, then read your chat id
+  (for example from `https://api.telegram.org/bot<token>/getUpdates`) and enter it on the Platform page with the
+  level to send from (default: warning and critical). The token is never stored in a file.
+- Proxy: Telegram is not reachable from every network. Enter an HTTP proxy on the Platform page (many VPN clients
+  expose one locally, e.g. `http://127.0.0.1:10809`); a SOCKS-only proxy needs a local HTTP bridge, because the
+  standard library speaks HTTP proxies only.
+- Delivery: every event is sent once; the position in the log is kept in `notify_state.json`. When Telegram is
+  unreachable nothing is lost - the next tick retries from the same place, and the Platform page shows the last
+  error. The first run starts at the end of the log (old events are not replayed); after a long outage the first 20
+  events are sent and the rest summarised in one message.
+- Test: "Send test message" on the Platform page, or `python -m sfactory.forward.notify --config <dir> --test`.
+- Tested against a local fake Telegram server: once-only delivery, level filter, retry after an outage and after
+  `ok: false`, the flood cap, delivery through an HTTP proxy, the scheduler hook and the dashboard test button.
 
 ## Not yet
 - Mark-to-market limits (need live prices of open positions).
-- A notification channel for the events.
