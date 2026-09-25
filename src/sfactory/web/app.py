@@ -2,17 +2,23 @@
 
     uv run --group web python -m sfactory.web --config D:/sf2_admin --port 8765
 
-Designed for one trusted operator on a local machine / LAN: bind to 127.0.0.1 by default; put it behind a reverse
-proxy with authentication before exposing it. No secrets are stored (MT5 password: SF_MT5_PASSWORD).
+Authentication: set `SF_WEB_TOKEN` (or pass `token=`) and every /api route except /api/health and /api/login needs
+either `Authorization: Bearer <token>` or the session cookie that /api/login sets (an HMAC of the token, HttpOnly,
+SameSite=Strict; the token itself is never stored in the browser). Without a token the API is open, which is only
+acceptable on 127.0.0.1: `python -m sfactory.web` refuses to bind elsewhere without one. Use HTTPS (a reverse proxy)
+beyond a trusted LAN. No other secrets are stored (MT5 password: SF_MT5_PASSWORD).
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from sfactory.web import readers
@@ -21,6 +27,13 @@ from sfactory.web.jobs import JobManager
 from sfactory.web.schemas import COLLECTIONS, PlatformSettings
 
 API_VERSION = "1"
+COOKIE = "sf_session"
+OPEN_PATHS = {"/api/health", "/api/login", "/api/logout"}
+
+
+def session_value(token: str) -> str:
+    """What the cookie holds: an HMAC of the token, so a stolen cookie does not reveal the token itself."""
+    return hmac.new(token.encode(), b"sfactory-web-session-v1", hashlib.sha256).hexdigest()
 
 
 def platform_meta() -> dict:
@@ -53,7 +66,10 @@ def platform_meta() -> dict:
             "collections": list(COLLECTIONS)}
 
 
-def create_app(config_dir: str | Path, static_dir: str | Path | None = None) -> FastAPI:
+def create_app(config_dir: str | Path, static_dir: str | Path | None = None, token: str | None = None) -> FastAPI:
+    """token: required API token; default from the SF_WEB_TOKEN environment variable (empty = no authentication)."""
+    token = token if token is not None else os.environ.get("SF_WEB_TOKEN", "")
+    session = session_value(token) if token else ""
     store = ConfigStore(config_dir)
     repo_root = Path(__file__).resolve().parents[3]
 
@@ -73,12 +89,46 @@ def create_app(config_dir: str | Path, static_dir: str | Path | None = None) -> 
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_methods=["*"], allow_headers=["*"])
 
+    def authenticated(request: Request) -> bool:
+        if not token:
+            return True
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer ") and hmac.compare_digest(auth[7:].strip(), token):
+            return True
+        return hmac.compare_digest(request.cookies.get(COOKIE, ""), session)
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api") and path not in OPEN_PATHS and not authenticated(request):
+            return JSONResponse({"detail": "authentication required"}, status_code=401)
+        return await call_next(request)
+
     def nf(e):
         raise HTTPException(404, str(e))
 
     @app.get("/api/health")
-    def health():
-        return {"ok": True, "api_version": API_VERSION, "config_dir": str(store.root)}
+    def health(request: Request):
+        ok = authenticated(request)
+        out = {"ok": True, "api_version": API_VERSION, "auth_required": bool(token), "authenticated": ok}
+        if ok:
+            out["config_dir"] = str(store.root)
+        return out
+
+    @app.post("/api/login")
+    def login(body: dict, response: Response, request: Request):
+        if not token:
+            return {"authenticated": True}
+        if not hmac.compare_digest(str(body.get("token", "")), token):
+            raise HTTPException(401, "wrong token")
+        response.set_cookie(COOKIE, session, httponly=True, samesite="strict", secure=request.url.scheme == "https",
+                            max_age=14 * 24 * 3600, path="/")
+        return {"authenticated": True}
+
+    @app.post("/api/logout")
+    def logout(response: Response):
+        response.delete_cookie(COOKIE, path="/")
+        return {"authenticated": False}
 
     @app.get("/api/meta")
     def meta():
