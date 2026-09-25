@@ -21,25 +21,25 @@ const KIND_FLAGS: Record<string, string[]> = {
   bench_speed: ["symbols", "store", "workers", "rows"],
 };
 
-interface Spec { title: string; sub: string; fields: FieldSpec[]; columns: [string, (d: Doc) => ReactNode][];
+interface Spec { title: string; single: string; sub: string; fields: FieldSpec[]; columns: [string, (d: Doc) => ReactNode][];
   blank: () => Doc }
 
 const SPECS: Record<string, Spec> = {
   catalogues: {
-    title: "Catalogues", sub: "Pre-registered row sets. Adding a row after seeing results is a new trial, so version them.",
+    title: "Catalogues", single: "catalogue", sub: "Pre-registered row sets. Adding a row after seeing results is a new trial, so version them.",
     fields: [{ key: "version", label: "Version", type: "text", hint: "Bump when rows change" }],
     columns: [["Version", (d) => String(d.version)], ["Rows", (d) => (d.rows as unknown[]).length]],
     blank: () => ({ id: "", name: "", description: "", version: "v1", rows: [] }),
   },
   policies: {
-    title: "Policies", sub: "Rows to trade, optionally with an accepted edge on/off mechanism. Freeze a policy before paper trading.",
+    title: "Policies", single: "policy", sub: "Rows to trade, optionally with an accepted edge on/off mechanism. Freeze a policy before paper trading.",
     fields: [{ key: "source_run", label: "Source run", type: "text" }, { key: "frozen", label: "Frozen", type: "bool" }],
     columns: [["Entries", (d) => (d.entries as unknown[]).length], ["Source run", (d) => String(d.source_run || "–")],
       ["State", (d) => (d.frozen ? <Tag tone="accent">frozen</Tag> : <Tag>draft</Tag>)]],
     blank: () => ({ id: "", name: "", description: "", entries: [], source_run: "", frozen: false }),
   },
   risk_budgets: {
-    title: "Risk budgets", sub: "Caps for the combined policy: per row, per edge family and a portfolio volatility target.",
+    title: "Risk budgets", single: "risk budget", sub: "Caps for the combined policy: per row, per edge family and a portfolio volatility target.",
     fields: [{ key: "max_weight", label: "Max weight per row", type: "optnumber", hint: "0 to 1, empty for none" },
       { key: "family_cap", label: "Max weight per family", type: "optnumber", hint: "0 to 1, empty for none" },
       { key: "target_vol_ann", label: "Target volatility per year", type: "optnumber", hint: "For example 0.10" },
@@ -49,7 +49,7 @@ const SPECS: Record<string, Spec> = {
     blank: () => ({ id: "", name: "", description: "", max_weight: 0.25, family_cap: 0.5, target_vol_ann: null, lev_max: 2 }),
   },
   cost_profiles: {
-    title: "Cost profiles", sub: "Default costs in basis points per side and swap in % per year. Per-symbol files come from the Moneta converter.",
+    title: "Cost profiles", single: "cost profile", sub: "Default costs in basis points per side and swap in % per year. Per-symbol files come from the Moneta converter.",
     fields: [{ key: "spread_bps", label: "Spread (bps, full)", type: "number" }, { key: "commission_bps", label: "Commission (bps per side)", type: "number" },
       { key: "slippage_bps", label: "Slippage (bps per side)", type: "number" }, { key: "swap_long_pct", label: "Swap long (% per year)", type: "number" },
       { key: "swap_short_pct", label: "Swap short (% per year)", type: "number" }, { key: "overrides_csv", label: "Per-symbol CSV", type: "text" }],
@@ -58,12 +58,12 @@ const SPECS: Record<string, Spec> = {
       swap_short_pct: -3.5, overrides_csv: "" }),
   },
   symbol_maps: {
-    title: "Symbol maps", sub: "Research symbol to broker symbol, one pair per line (AAPL=AAPL.US).",
+    title: "Symbol maps", single: "symbol map", sub: "Research symbol to broker symbol, one pair per line (AAPL=AAPL.US).",
     fields: [], columns: [["Symbols", (d) => Object.keys(d.mapping as object).length]],
     blank: () => ({ id: "", name: "", description: "", mapping: {} }),
   },
   brokers: {
-    title: "Broker accounts", sub: "Where orders go. The password is read from SF_MT5_PASSWORD at run time, never stored.",
+    title: "Broker accounts", single: "broker account", sub: "Where orders go. The password is read from SF_MT5_PASSWORD at run time, never stored.",
     fields: [{ key: "kind", label: "Type", type: "select", options: [["sim", "Simulated (paper)"], ["mt5", "MetaTrader 5"]] },
       { key: "login", label: "MT5 login", type: "optnumber" }, { key: "server", label: "MT5 server", type: "text" },
       { key: "symbol_map", label: "Symbol map id", type: "text" }, { key: "dry_run", label: "Dry run (build orders, do not send)", type: "bool" }],
@@ -72,7 +72,7 @@ const SPECS: Record<string, Spec> = {
     blank: () => ({ id: "", name: "", description: "", kind: "sim", login: null, server: "", symbol_map: "", dry_run: true }),
   },
   job_presets: {
-    title: "Job presets", sub: "Saved command lines for the platform scripts. Start them from Jobs.",
+    title: "Job presets", single: "job preset", sub: "Saved command lines for the platform scripts. Start them from Jobs.",
     fields: [{ key: "kind", label: "Script", type: "select", options: [["run_real", "Research run (run_real)"],
       ["run_daily", "Daily paper / live job (run_daily)"], ["convert_costs", "Moneta cost converter"], ["bench_speed", "Speed benchmark"]] }],
     columns: [["Script", (d) => String(d.kind)], ["Arguments", (d) => Object.keys(d.args as object).length]],
@@ -130,7 +130,7 @@ function Editor({ collection, spec, meta, init, isNew, onClose }: { collection: 
     { onSuccess: () => { toast.success(`Saved ${doc.name}`); onClose(); } });
   const wide = collection === "catalogues" || collection === "policies" || collection === "job_presets";
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()} title={isNew ? `New ${spec.title.toLowerCase().replace(/s$/, "")}` : doc.name} wide={wide}>
+    <Dialog open onOpenChange={(o) => !o && onClose()} title={isNew ? `New ${spec.single}` : doc.name} wide={wide}>
       <div className="grid gap-4">
         <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label="Name"><Input value={doc.name} onChange={(e) => set("name", e.target.value)} /></Field>
