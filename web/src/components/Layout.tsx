@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Activity, BookOpen, Boxes, Briefcase, Cable, Coins, FlaskConical, Gauge, Layers, LogOut, Map, Menu, Moon,
+import { Activity, BookOpen, Boxes, Briefcase, Cable, CalendarClock, Coins, FlaskConical, Gauge, Layers, LogOut, Map, Menu, Moon,
   PlayCircle, Radio, Settings, ShieldHalf, Sun } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { NavLink, Outlet } from "react-router-dom";
@@ -24,6 +24,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: ReactNode 
     { to: "/admin/symbol_maps", label: "Symbol maps", icon: <Map /> },
     { to: "/admin/brokers", label: "Broker accounts", icon: <Cable /> },
     { to: "/admin/job_presets", label: "Job presets", icon: <Boxes /> },
+    { to: "/admin/schedules", label: "Schedules", icon: <CalendarClock /> },
   ] },
 ];
 

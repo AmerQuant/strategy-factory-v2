@@ -101,3 +101,13 @@ export interface Job {
   id: string; kind: string; preset: string; cmd: string[]; status: string; started_at: string;
   finished_at?: string; returncode: number | null; log?: string[];
 }
+export interface ScheduleRun {
+  id: string; schedule: string; name: string; due: string; started_at: string; finished_at?: string; status: string;
+  note: string; steps: { preset: string; job: string; status: string }[];
+}
+export interface SchedulerSummary {
+  heartbeat: { at: string; pid: number; schedules: number } | null; age_seconds: number | null; alive: boolean;
+  schedules: { id: string; name: string; enabled: boolean; steps: string[]; next: string | null; error: string | null;
+    last: ScheduleRun | null }[];
+  runs: ScheduleRun[];
+}
