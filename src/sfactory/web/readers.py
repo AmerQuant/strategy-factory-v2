@@ -124,3 +124,28 @@ def live_detail(live_dir: str, name: str) -> dict:
             "positions": positions, "pending": st.get("pending") or [], "closed": closed[-500:], "equity": eq,
             "by_row": list(by_row.values()), "log": (st.get("log") or [])[-250:], "weights": st.get("weights") or {},
             "policy_rows": len(st.get("policy") or [])}
+
+
+def scheduler_summary(config_dir: str | Path, now=None) -> dict:
+    """Heartbeat, next / last run per schedule and recent runs of the scheduler service (read-only)."""
+    from datetime import UTC, datetime, timedelta
+    root = Path(config_dir) / "scheduler"
+    now = now or datetime.now(UTC)
+    hb = load_json(root / "heartbeat.json")
+    age = (now - datetime.fromisoformat(hb["at"])).total_seconds() if hb else None
+    state = load_json(root / "state.json") or {}
+    runs = [r for r in (load_json(p) for p in (root / "runs").glob("*.json")) if r] if (root / "runs").exists() else []
+    runs.sort(key=lambda r: r.get("started_at", ""), reverse=True)
+    last = {}
+    for r in runs:
+        last.setdefault(r["schedule"], r)
+    scheds = []
+    for p in sorted((Path(config_dir) / "schedules").glob("*.json")):
+        d = load_json(p) or {}
+        st = state.get(d.get("id"), {})
+        scheds.append({"id": d.get("id"), "name": d.get("name"), "enabled": d.get("enabled", True),
+                       "steps": d.get("steps", []), "next": st.get("next"), "error": st.get("error"),
+                       "last": last.get(d.get("id"))})
+    return {"heartbeat": hb, "age_seconds": age,
+            "alive": age is not None and age < timedelta(minutes=2).total_seconds(),
+            "schedules": scheds, "runs": runs[:50]}
