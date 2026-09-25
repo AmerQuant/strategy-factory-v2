@@ -27,6 +27,7 @@ from sfactory.signals.specs import (
     atr_exec_units,
     exit_signal,
     filter_mask,
+    session_exit_signal,
 )
 
 
@@ -203,6 +204,11 @@ class TradeCache:
                 ex = reverse_exit(entry_spec, a.sig_high, a.sig_low, a.sig_close)
             else:
                 ex = exit_signal(exit_spec, a.sig_close, a.sig_high if d == 1 else a.sig_low, d, 2)
+            if exit_spec.flat_eod:
+                eod = session_exit_signal(a.dates)
+                ex = ex | eod
+                # no entry filling on the last bar, nor on the bar that already carries the session exit
+                entry = entry & ~eod & ~np.r_[eod[1:], False]
             rec = run_cell_generic(entry.astype(np.bool_), ex.astype(np.bool_), a.ex_open, a.ex_close, a.div,
                                    atr, d, exit_spec.max_hold, exit_spec.target_atr, exit_spec.stop_atr,
                                    self.notional, self.cost_model.per_side_bps(symbol), exit_spec.trail_atr)
