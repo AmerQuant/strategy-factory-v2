@@ -38,23 +38,23 @@ export function RowsEditor({ rows, onChange, meta, withActivation }: { rows: Row
               return (
                 <tr key={i}>
                   <td><div className="flex items-center gap-2"><FamilyDot family={fam[String(c.method)] ?? "ENS"} />
-                    <Select className="h-8 min-w-36" value={String(c.method)} onChange={(e) => put(i, { method: e.target.value })}>
+                    <Select className="h-8 min-w-40 px-2" value={String(c.method)} onChange={(e) => put(i, { method: e.target.value })}>
                       {meta.families.map((f) => (
                         <optgroup key={f} label={f}>{meta.methods.filter((m) => m.family === f).map((m) =>
                           <option key={m.method} value={m.method}>{m.method}</option>)}</optgroup>))}
                     </Select></div></td>
-                  <td><Select className="h-8 w-20" value={String(c.direction ?? 1)} onChange={(e) => put(i, { direction: Number(e.target.value) })}>
+                  <td><Select className="h-8 w-24 px-2" value={String(c.direction ?? 1)} onChange={(e) => put(i, { direction: Number(e.target.value) })}>
                     <option value="1">Buy</option><option value="-1">Sell</option></Select></td>
-                  <td><Select className="h-8 w-20" value={String(c.rung ?? "A0")} onChange={(e) => put(i, { rung: e.target.value })}>
+                  <td><Select className="h-8 w-20 px-2" value={String(c.rung ?? "A0")} onChange={(e) => put(i, { rung: e.target.value })}>
                     {meta.rungs.map((g) => <option key={g}>{g}</option>)}</Select></td>
                   <td><input type="number" min={0} className="h-8 w-20 rounded-md border border-line bg-surface px-2" value={Number(c.max_positions ?? 0)}
                     onChange={(e) => put(i, { max_positions: Number(e.target.value) })} /></td>
-                  <td><Select className="h-8 w-24" value={String(c.sizing ?? "fixed")} onChange={(e) => put(i, { sizing: e.target.value })}>
+                  <td><Select className="h-8 w-32 px-2" value={String(c.sizing ?? "fixed")} onChange={(e) => put(i, { sizing: e.target.value })}>
                     <option value="fixed">Fixed</option><option value="vol">Vol target</option></Select></td>
-                  <td><Select className="h-8 w-32" value={String(c.universe_mode ?? "membership")} onChange={(e) => put(i, { universe_mode: e.target.value })}>
+                  <td><Select className="h-8 w-44 px-2" value={String(c.universe_mode ?? "membership")} onChange={(e) => put(i, { universe_mode: e.target.value })}>
                     <option value="membership">Index membership</option><option value="top_liquidity">Top liquidity</option></Select></td>
                   {withActivation && (
-                    <td><Select className="h-8 w-32" value={String((r.activation as Row | null)?.mode ?? "")}
+                    <td><Select className="h-8 w-36 px-2" value={String((r.activation as Row | null)?.mode ?? "")}
                       onChange={(e) => put(i, {}, e.target.value ? { ...(meta.activation_defaults as Row), mode: e.target.value } : null)}>
                       <option value="">Always on</option>
                       {meta.activation_modes.filter((m) => m !== "always").map((m) => <option key={m} value={m}>{m}</option>)}

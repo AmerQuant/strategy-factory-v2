@@ -140,8 +140,8 @@ function Editor({ collection, spec, meta, init, isNew, onClose }: { collection: 
         {spec.fields.length > 0 && <div className="grid items-start gap-4 sm:grid-cols-2">
           {spec.fields.map((f) => <FieldInput key={f.key} f={f} value={doc[f.key]} onChange={(v) => set(f.key, v)} />)}
         </div>}
-        {collection === "catalogues" && <Field label="Rows"><RowsEditor rows={doc.rows as Row[]} meta={meta} onChange={(r) => set("rows", r)} /></Field>}
-        {collection === "policies" && <Field label="Entries"><RowsEditor rows={doc.entries as Row[]} meta={meta} withActivation onChange={(r) => set("entries", r)} /></Field>}
+        {collection === "catalogues" && <Field group label="Rows"><RowsEditor rows={doc.rows as Row[]} meta={meta} onChange={(r) => set("rows", r)} /></Field>}
+        {collection === "policies" && <Field group label="Entries"><RowsEditor rows={doc.entries as Row[]} meta={meta} withActivation onChange={(r) => set("entries", r)} /></Field>}
         {collection === "symbol_maps" && <MappingInput value={doc.mapping as Record<string, string>} onChange={(m) => set("mapping", m)} />}
         {collection === "job_presets" && <ArgsInput kind={String(doc.kind)} value={doc.args as Record<string, unknown>} onChange={(a) => set("args", a)} />}
         <ErrorNote error={save.error} />
@@ -185,7 +185,7 @@ function ArgsInput({ kind, value, onChange }: { kind: string; value: Record<stri
   const flags = KIND_FLAGS[kind] ?? [];
   const put = (list: [string, unknown][]) => onChange(Object.fromEntries(list.filter(([k]) => k)));
   return (
-    <Field label="Arguments" hint="Flags without values (such as diverse or open-holdout) are switched on with the checkbox.">
+    <Field group label="Arguments" hint="Flags without values (such as diverse or open-holdout) are switched on with the checkbox.">
       <div className="grid gap-2">
         <datalist id={`flags-${kind}`}>{flags.map((f) => <option key={f} value={f} />)}</datalist>
         {entries.map(([k, v], i) => (
