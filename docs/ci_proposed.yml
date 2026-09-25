@@ -1,0 +1,38 @@
+# Proposed replacement for .github/workflows/ci.yml (the assistant's token cannot write workflow files).
+# Copy it over the current file on the owner's machine:  copy docs\ci_proposed.yml .github\workflows\ci.yml
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --group web          # web API tests run too (they skip without the group)
+      - run: uv run ruff check src tests scripts
+      - run: uv run pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund   # switch to `npm ci` once web/package-lock.json is committed
+      - run: npm run build                       # tsc type check + vite build
+
+  crosscheck:
+    # ADR-0002 reference engine (vectorbt). Non-blocking: vectorbt may pin a numba version that conflicts with ours.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --group crosscheck
+      - run: uv run pytest -q tests/test_crosscheck_spa_robustness.py
