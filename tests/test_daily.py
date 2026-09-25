@@ -128,6 +128,10 @@ def test_run_daily_script_on_a_fake_v1_store(tmp_path):
     st = DailyState.load(state)
     assert st.last_dp == "2012-01-01" and len(st.log) == len(days) and all(x["reconciled"] for x in st.log)
     assert len(st.closed_trades()) > 5 and len(list((tmp_path / "rep").glob("*.json"))) == len(days)
+    last = run_daily.main(["--state", str(state), "--store", str(store), "--costs", "flat5"])   # the store's last day
+    assert "noop" not in last
+    rerun = run_daily.main(["--state", str(state), "--store", str(store), "--costs", "flat5"])
+    assert rerun["noop"] and len(DailyState.load(state).log) == len(days) + 1   # no new data: a no-op, not an error
 
 
 def test_fast_clock_in_the_live_book_matches_research(mkt):
