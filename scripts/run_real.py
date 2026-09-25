@@ -12,6 +12,8 @@ Without --membership the universe is the top-N by trailing dollar volume at each
 
 Intraday: `--timeframe 1H` reads the hourly store; `--resample 4h` builds 4H bars from it and `--clock-shift 7h`
 moves the clock to a broker day (17:00 New York = 00:00). Resampled / shifted data is a new data version.
+
+Speed: `--workers 0` precomputes the trade cache on all cores first (ADR-0004); results do not depend on it.
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ from sfactory.data.regime import market_up_series
 from sfactory.data.resample import check_no_straddle, resample_bars, shift_clock
 from sfactory.data.sfac_store import load_store
 from sfactory.engine.cache import TradeCache, prepare_arrays
+from sfactory.engine.parallel import precompute
 from sfactory.evaluation.catalog_runner import run_catalog
 from sfactory.evaluation.evidence import build_evidence, dumps
 from sfactory.evaluation.holdout import run_holdout
@@ -72,6 +75,8 @@ def parse(argv=None):
     ap.add_argument("--no-ensembles", action="store_true")
     ap.add_argument("--no-robustness", action="store_true")
     ap.add_argument("--open-holdout", action="store_true", help="burns the holdout for this data version")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="processes for the trade-cache precompute (0 = all cores); results do not depend on it")
     return ap.parse_args(argv)
 
 
@@ -121,6 +126,8 @@ def main(argv=None) -> dict:
     ens = [] if a.no_ensembles else [replace(e, rung=a.rung) for e in ensemble_rows(rows) if len(e.members) > 1]
     rows = rows + ens
     reg = Registry(a.registry)
+    if a.workers != 1:
+        precompute(cache, rows, n_workers=a.workers or None)
     cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev)
     hold = None
     if a.open_holdout:

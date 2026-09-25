@@ -4,7 +4,7 @@
 - Phase: P0 done → skeleton + benchmarks + capacity + statistics + ablation ladder + 18-row catalogue + screening + combined policy + holdout + forward monitoring done on synthetic data
 - Design: v2.1 Persian Word doc (owner); specs in docs/spec/
 - Accepted ADRs: 0001 uv + Polars; 0002 custom NumPy/Numba engine, vectorbt only as cross-check; 0003 Parquet + DuckDB
-- Deferred: 0004 parallelism (P7)
+- Accepted: 0004 parallelism (algorithmic slicing fix + stdlib process pool for the trade cache)
 
 ## Done (skeleton)
 - data: contracts, CRSP-style dividend adjustment, synthetic market generator, point-in-time eligibility
@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 151 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 155 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -35,13 +35,14 @@
 - package 2 (intraday 1H/4H): Datetime bar convention (bar start, no midnight straddle), 4H resampling with broker clock shift + alignment variants, intraday dividends/swap/universe/capacity/metrics, hourly synthetic market, run_real --timeframe/--resample/--clock-shift (docs/spec/intraday.md)
 - package 3 (diverse families, design 13.2): VOL (vol_spike, squeeze), XS (cross-sectional momentum via the capacity ranker), CAL (turn of month), EV (post ex-dividend, index addition); SeriesCtx, BRK/HOLD exit libraries, separate catalogue version, run_real --diverse (docs/spec/families.md)
 - package 4 (sizing): per-trade vol targeting with a fast shock leg, gross exposure cap, daily vol-target and drawdown-brake overlays, sizing ablation with the paired-bootstrap Sharpe gate (docs/spec/sizing.md)
+- package 5 (speed, ADR-0004): stacked per-setting time slicing and memoised universe (about 3-5x on 200 symbols, single process), parallel trade-cache precompute with a spawn process pool, run_real --workers, scripts/bench_speed.py
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
 2. ~~Hourly timeframe in engine, folds and exits~~ (done; session exits, DST-aware clock, live intraday orders open)
 3. ~~New edge families~~ (done; gap rows and announcement-date events open, event rows wait for dividends / membership data)
 4. ~~Advanced sizing~~ (done; cross-row risk budget in the combined policy and run_real integration open)
-5. Parallelism and speed for ~5,000 symbols (ADR-0004)
+5. ~~Parallelism and speed~~ (done; measure with scripts/bench_speed.py on the owner's machine)
 6. MT5 bridge as far as possible: order/fill contract, netting across rows, daily reconciliation, paper mode with a simulated broker
 7. Moneta cost converter v1 → v2 CSV
 
@@ -54,3 +55,4 @@
 6. Hourly run: `run_real.py --timeframe 1H` (and `--resample 4h --clock-shift 7h` for the broker-aligned 4H set)
 7. Diverse families on real data: `run_real.py --diverse` (event rows switch on with `--dividends` / `--membership`)
 8. `run_sizing` per accepted row on real data: vol sizing is kept only if it passes the Sharpe gate
+9. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
