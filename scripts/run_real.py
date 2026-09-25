@@ -3,8 +3,8 @@
     uv run python scripts/run_real.py --store D:/AmerAndish/Projects/Trade/StrategyFactory_data/store \
         --out D:/AmerAndish/Projects/Trade/sf2_runs/run1 --registry D:/AmerAndish/Projects/Trade/sf2_runs/registry.duckdb
 
-load -> audit (critical symbols excluded) -> optional dividends / membership -> folds from the data span
-(holdout = last 20 %, >= 18 months) -> 18-row catalogue (+ `--diverse` family rows) + family ensembles ->
+load -> audit (critical symbols excluded) -> survivorship check -> optional dividends / membership -> folds from
+the data span (holdout = last 20 %, >= 18 months) -> 18-row catalogue (+ `--diverse` family rows) + family ensembles ->
 screening + robustness -> combined policy -> [--open-holdout: the one-shot holdout] -> evidence.json + report.html.
 
 The registry file must be the same across runs: every run adds its trials there and DSR counts them all.
@@ -37,6 +37,7 @@ from sfactory.data.folds_from_data import fold_config_for
 from sfactory.data.regime import market_up_series
 from sfactory.data.resample import check_no_straddle, resample_bars, shift_clock
 from sfactory.data.sfac_store import load_store
+from sfactory.data.survivorship import survivorship_report
 from sfactory.engine.cache import TradeCache, prepare_arrays
 from sfactory.engine.parallel import precompute
 from sfactory.evaluation.catalog_runner import run_catalog
@@ -116,6 +117,9 @@ def main(argv=None) -> dict:
     caveats = list(load.caveats) if not a.dividends else []
     if mem is None:
         caveats.append(f"no index membership file: universe = top {a.top_n} by trailing dollar volume at each DP")
+    surv = survivorship_report(bars, mem)
+    if surv["verdict"] not in ("delistings_present", "too_short"):
+        caveats.append(f"survivorship check: {surv['verdict']} - {surv['advice']}")
     bars = add_adj_factor(bars, divs)
     fcfg = fold_config_for(bars["date"].min(), bars["date"].max())
     fm = FoldManager(fcfg)
@@ -157,7 +161,8 @@ def main(argv=None) -> dict:
     meta = {"data": version, "catalog": catalog, "universe": base.universe_mode, "top_n": a.top_n,
             "timeframe": a.resample or a.timeframe, "clock_shift": a.clock_shift,
             "symbols_loaded": len(load.symbols), "symbols_skipped": load.skipped, "audit": audit,
-            "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()}}
+            "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()},
+            "survivorship": {k: v for k, v in surv.items() if not k.startswith("examples")}}
     pkg = build_evidence(cat, hold, meta)
     if analysis:
         pkg["row_analysis"], pkg["row_analysis_summary"] = analysis, summarize(analysis)
@@ -166,7 +171,7 @@ def main(argv=None) -> dict:
     issues.write_csv(out / "audit_issues.csv")
     summary = {"accepted": [cat["table"][i]["row"] for i in cat["accepted"]], "trials": cat["n_trials"],
                "combined_sharpe": cat["combined"]["sharpe"], "holdout": hold and hold["status"], "out": str(out),
-               "row_analysis": summarize(analysis) if analysis else None}
+               "row_analysis": summarize(analysis) if analysis else None, "survivorship": surv["verdict"]}
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     return summary
 
