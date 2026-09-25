@@ -19,6 +19,11 @@ for the next frozen policy; nothing is switched on automatically).
 Risk budget for the combined policy: `--max-row-weight 0.25 --max-family-weight 0.5 --target-vol 0.10`.
 
 Speed: `--workers 0` precomputes the trade cache on all cores first (ADR-0004); results do not depend on it.
+
+FX / index / metal CFDs (Moneta MT5): `--asset-class fx|index_cfd|metal` reads the v1 store's Dukascopy 1H snapshots
+on the 17:00 New York broker day (data/markets.py; `--timeframe 1D` builds daily bars from them), runs the CFD
+catalogue (FX / IX rows need `--symbol-top-n`, MT rows are pooled) and needs `--costs` as a CSV
+(scripts/convert_mt5_costs.py): symbols without a cost row are left out and listed, nothing is defaulted.
 """
 from __future__ import annotations
 
@@ -29,15 +34,18 @@ from pathlib import Path
 
 import polars as pl
 
-from sfactory.costs.model import CostModel, load_cost_overrides
+from sfactory.costs.model import CostModel, load_cost_overrides, load_cost_table
 from sfactory.data.adjust import add_adj_factor
 from sfactory.data.audit import audit_bars, audit_summary
 from sfactory.data.contracts import DIVIDENDS_SCHEMA
 from sfactory.data.folds_from_data import fold_config_for
+from sfactory.data.markets import ASSET_CLASSES, CFD_CLASSES, load_market
 from sfactory.data.regime import market_up_series
 from sfactory.data.resample import check_no_straddle, resample_bars, shift_clock
+from sfactory.data.sessions import bars_outside, read_sessions
 from sfactory.data.sfac_store import load_store
 from sfactory.data.survivorship import survivorship_report
+from sfactory.data.universe import static_membership
 from sfactory.engine.cache import TradeCache, prepare_arrays
 from sfactory.engine.parallel import precompute
 from sfactory.evaluation.catalog_runner import run_catalog
@@ -46,10 +54,12 @@ from sfactory.evaluation.holdout import run_holdout
 from sfactory.evaluation.row_analysis import analyze_rows, summarize
 from sfactory.policy.catalog import (
     CATALOG_VERSION,
+    CFD_CATALOG_VERSION,
     DIVERSE_CATALOG_VERSION,
     DIVERSE_METHODS,
     MR_METHODS,
     TF_METHODS,
+    cfd_rows,
     diverse_rows,
     ensemble_rows,
     equity_rows,
@@ -88,6 +98,11 @@ def parse(argv=None):
     ap.add_argument("--max-row-weight", type=float, help="risk budget: cap per row in the combined policy")
     ap.add_argument("--max-family-weight", type=float, help="risk budget: cap per edge family (MR, TF, VOL, ...)")
     ap.add_argument("--target-vol", type=float, help="risk budget: combined policy vol target, fraction per year")
+    ap.add_argument("--asset-class", default="us_equity", choices=ASSET_CLASSES,
+                    help="v1 store class; fx / index_cfd / metal run the CFD path (24x5, New York 17:00 day)")
+    ap.add_argument("--symbol-top-n", type=int, default=0,
+                    help="CFD rows: S7 top-N symbols per DP (required for fx / index_cfd; metal is pooled)")
+    ap.add_argument("--sessions", help="CFD path, intraday: sessions CSV (data/sessions.py) for the data audit")
     ap.add_argument("--workers", type=int, default=1,
                     help="processes for the trade-cache precompute (0 = all cores); results do not depend on it")
     return ap.parse_args(argv)
@@ -98,9 +113,27 @@ def main(argv=None) -> dict:
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     symbols = [s.strip() for s in Path(a.symbols).read_text(encoding="utf-8").split() if s.strip()] if a.symbols else None
-    load = load_store(a.store, a.timeframe, symbols=symbols)
-    raw, version = load.bars, load.version
-    if a.timeframe != "1D":
+    cfd = a.asset_class in CFD_CLASSES
+    extra: dict = {}
+    if cfd:
+        bad = [f for f, v in (("--diverse", a.diverse), ("--membership", a.membership), ("--dividends", a.dividends))
+               if v]
+        if bad or a.costs in ("moneta", "flat5"):
+            raise SystemExit(f"{a.asset_class}: not with {bad or ''}{' --costs moneta/flat5' if not bad else ''}; "
+                             "--costs must be a cost CSV (scripts/convert_mt5_costs.py)")
+        ml = load_market(a.store, a.asset_class, a.timeframe, a.resample, a.clock_shift, symbols)
+        load, raw, version = ml.load, ml.bars, ml.version
+        costs, priced = load_cost_table(a.costs)
+        no_cost = sorted(set(raw["symbol"].unique().to_list()) - priced)
+        raw = raw.filter(pl.col("symbol").is_in(sorted(priced)))
+        extra = {"asset_class": a.asset_class, "weekend_bars_dropped": ml.weekend_bars,
+                 "symbols_without_costs": no_cost, "clock": "ny"}
+        if a.sessions and a.timeframe != "1D":
+            extra["bars_outside_sessions"] = bars_outside(raw, read_sessions(a.sessions))
+    else:
+        load = load_store(a.store, a.timeframe, symbols=symbols)
+        raw, version = load.bars, load.version
+    if a.timeframe != "1D" and not cfd:
         if a.resample:
             raw = resample_bars(raw, a.resample, a.clock_shift)
         else:
@@ -114,17 +147,24 @@ def main(argv=None) -> dict:
     divs = (pl.read_parquet(a.dividends).select(list(DIVIDENDS_SCHEMA)) if a.dividends
             else pl.DataFrame(schema=DIVIDENDS_SCHEMA))
     mem = pl.read_parquet(a.membership) if a.membership else None
-    caveats = list(load.caveats) if not a.dividends else []
-    if mem is None:
-        caveats.append(f"no index membership file: universe = top {a.top_n} by trailing dollar volume at each DP")
-    surv = survivorship_report(bars, mem)
-    if surv["verdict"] not in ("delistings_present", "too_short"):
-        caveats.append(f"survivorship check: {surv['verdict']} - {surv['advice']}")
+    if cfd:
+        mem = static_membership(bars)
+        caveats = list(ml.caveats) + ([f"symbols left out, no cost row: {extra['symbols_without_costs']}"]
+                                      if extra["symbols_without_costs"] else [])
+        surv = {"verdict": "not_applicable", "advice": "fixed CFD symbol list: survivorship check not applicable"}
+    else:
+        caveats = list(load.caveats) if not a.dividends else []
+        if mem is None:
+            caveats.append(f"no index membership file: universe = top {a.top_n} by trailing dollar volume at each DP")
+        surv = survivorship_report(bars, mem)
+        if surv["verdict"] not in ("delistings_present", "too_short"):
+            caveats.append(f"survivorship check: {surv['verdict']} - {surv['advice']}")
     bars = add_adj_factor(bars, divs)
     fcfg = fold_config_for(bars["date"].min(), bars["date"].max())
     fm = FoldManager(fcfg)
-    costs = (CostModel.moneta_share_cfd_proxy() if a.costs == "moneta" else CostModel.flat(5.0) if a.costs == "flat5"
-             else load_cost_overrides(a.costs, CostModel.moneta_share_cfd_proxy()))
+    if not cfd:
+        costs = (CostModel.moneta_share_cfd_proxy() if a.costs == "moneta" else CostModel.flat(5.0)
+                 if a.costs == "flat5" else load_cost_overrides(a.costs, CostModel.moneta_share_cfd_proxy()))
     dev, ddev = fm.dev_view(bars), fm.dev_view(divs, "ex_date")
     cache = TradeCache(prepare_arrays(dev, ddev), version, cost_model=costs, cache_dir=out / "cache")
     cache.set_market_regime(*market_up_series(dev), "eqw-ma200")
@@ -132,7 +172,7 @@ def main(argv=None) -> dict:
         cache.set_index_events(mem)
     base = LadderConfig(rung=a.rung, max_positions=a.max_positions, max_new_per_day=a.max_new,
                         universe_mode="membership" if mem is not None else "top_liquidity", universe_top_n=a.top_n)
-    rows = equity_rows(base)
+    rows = cfd_rows(a.asset_class, a.symbol_top_n, base) if cfd else equity_rows(base)
     if a.diverse:
         rows += diverse_rows(base, dividends=bool(a.dividends), index_events=mem is not None)
     if a.methods:
@@ -157,12 +197,12 @@ def main(argv=None) -> dict:
         if mem is not None:
             full.set_index_events(mem)
         hold = run_holdout(fm, full, bars, mem, cat, reg, version)
-    catalog = CATALOG_VERSION + (f"+{DIVERSE_CATALOG_VERSION}" if a.diverse else "")
+    catalog = CFD_CATALOG_VERSION if cfd else CATALOG_VERSION + (f"+{DIVERSE_CATALOG_VERSION}" if a.diverse else "")
     meta = {"data": version, "catalog": catalog, "universe": base.universe_mode, "top_n": a.top_n,
             "timeframe": a.resample or a.timeframe, "clock_shift": a.clock_shift,
             "symbols_loaded": len(load.symbols), "symbols_skipped": load.skipped, "audit": audit,
             "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()},
-            "survivorship": {k: v for k, v in surv.items() if not k.startswith("examples")}}
+            "survivorship": {k: v for k, v in surv.items() if not k.startswith("examples")}, **extra}
     pkg = build_evidence(cat, hold, meta)
     if analysis:
         pkg["row_analysis"], pkg["row_analysis_summary"] = analysis, summarize(analysis)

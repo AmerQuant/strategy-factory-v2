@@ -13,6 +13,8 @@ CATALOG_VERSION = "2026-10-v1"
 MR_METHODS = ("rsi", "ibs", "consec", "lowest_close", "donchian_low")
 TF_METHODS = ("ma_cross", "donchian_break", "supertrend", "ichimoku")
 DIVERSE_CATALOG_VERSION = "2026-10-families-v1"
+CFD_CATALOG_VERSION = "2026-10-cfd-v1"      # FX / index / metal CFDs (Moneta MT5): FX, IX, MT rows
+CFD_LABEL = {"fx": "fx", "index_cfd": "indices", "metal": "metals"}   # v1 store class -> row asset class
 DIVERSE_METHODS = ("vol_spike", "squeeze", "xs_mom", "tom", "post_exdiv", "index_add")
 # (method, directions): sells only where the mirror is meaningful
 DIVERSE_ROWS = (("vol_spike", (1, -1)), ("squeeze", (1, -1)), ("xs_mom", (1, -1)), ("tom", (1,)),
@@ -48,6 +50,24 @@ def fx_rows(base: LadderConfig | None = None, top_n: int = 4) -> list[LadderConf
     from dataclasses import replace
     base = base or LadderConfig()
     base = replace(base, min_price=0.0, min_dollar_vol=0.0, symbol_select=top_n, asset_class="fx")
+    return [replace(base, method=m, direction=d) for m in MR_METHODS + TF_METHODS for d in (1, -1)]
+
+
+def cfd_rows(asset_class: str, top_n: int, base: LadderConfig | None = None) -> list[LadderConfig]:
+    """The CFD catalogue (version CFD_CATALOG_VERSION): every MR / TF method x direction for one v1 store class
+    (`fx`, `index_cfd`, `metal`), rows labelled FX / IX / MT. No price or dollar-volume filters (CFD volume is not
+    meaningful), static membership. FX and index rows select the top-N symbols by IS t-stat at every DP (S7,
+    `top_n` required); metal rows trade the class pooled (two symbols: selection is meaningless, owner's choice)."""
+    from dataclasses import replace
+    if asset_class not in CFD_LABEL:
+        raise ValueError(f"asset class {asset_class} not in {sorted(CFD_LABEL)}")
+    if asset_class == "metal" and top_n:
+        raise ValueError("metal rows are pooled: top_n must be 0")
+    if asset_class != "metal" and top_n <= 0:
+        raise ValueError(f"{asset_class} rows need top_n > 0 (S7 symbol selection)")
+    base = base or LadderConfig()
+    base = replace(base, min_price=0.0, min_dollar_vol=0.0, symbol_select=top_n, asset_class=CFD_LABEL[asset_class],
+                   universe_mode="membership")
     return [replace(base, method=m, direction=d) for m in MR_METHODS + TF_METHODS for d in (1, -1)]
 
 

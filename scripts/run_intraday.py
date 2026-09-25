@@ -11,6 +11,9 @@ Every run processes all bars after the state's last bar (catch-up), saving the s
   is refused (missed bars cannot be executed at their historical prices): run it on every bar, or re-initialise.
 `--skip-last` drops the store's last bar when the data refresh also writes the bar that is still forming.
 Bars, resampling and clock shift must be the same as in the research run that produced the policy.
+FX / index / metal CFDs: `--asset-class fx|index_cfd|metal` reads the 1H snapshots on the 17:00 New York broker clock
+(data/markets.py; --clock-shift must stay ny), static membership, `--costs` a cost CSV (symbols without a row left out).
+Schedule it with a `bars` trigger 00:00-23:59 New York including Sunday: runs without a new bar do nothing.
 """
 from __future__ import annotations
 
@@ -24,12 +27,14 @@ import numpy as np
 import polars as pl
 
 from sfactory.broker.sim import SimulatedBroker
-from sfactory.costs.model import CostModel, load_cost_overrides
+from sfactory.costs.model import CostModel, load_cost_overrides, load_cost_table
 from sfactory.data.adjust import add_adj_factor
 from sfactory.data.contracts import DIVIDENDS_SCHEMA
+from sfactory.data.markets import ASSET_CLASSES, CFD_CLASSES, load_market
 from sfactory.data.regime import market_up_series
 from sfactory.data.resample import check_no_straddle, resample_bars, shift_clock
 from sfactory.data.sfac_store import load_store
+from sfactory.data.universe import static_membership
 from sfactory.engine.cache import prepare_arrays
 from sfactory.forward import alerts
 from sfactory.forward.daily import DailyState, _d, bar_step, new_state
@@ -63,6 +68,7 @@ def parse(argv=None):
     ap.add_argument("--mt5-server")
     ap.add_argument("--symbol-map")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--asset-class", default="us_equity", choices=ASSET_CLASSES)
     ap.add_argument("--kill-file", help="kill switch file (default: SF_KILL_FILE, set by the dashboard / scheduler)")
     ap.add_argument("--events-file", help="event log for alerts (default: SF_EVENTS_FILE)")
     return ap.parse_args(argv)
@@ -91,18 +97,26 @@ def main(argv=None) -> dict:
         st.save(a.state)
         return {"init": a.state, "rows": len(st.policy)}
     st = DailyState.load(a.state)
-    load = load_store(a.store, a.timeframe)
-    raw, version = load.bars, load.version
-    raw = resample_bars(raw, a.resample, a.clock_shift) if a.resample else shift_clock(raw, a.clock_shift)
-    check_no_straddle(raw, a.resample or a.timeframe.lower())
-    if a.resample or a.clock_shift != "0h":
-        version = f"{version}-{a.resample or a.timeframe}-shift{a.clock_shift}"
     divs = (pl.read_parquet(a.dividends).select(list(DIVIDENDS_SCHEMA)) if a.dividends
             else pl.DataFrame(schema=DIVIDENDS_SCHEMA))
+    if a.asset_class in CFD_CLASSES:
+        if a.costs in ("moneta", "flat5") or a.membership or a.dividends:
+            raise SystemExit(f"{a.asset_class}: --costs must be a cost CSV; no --membership / --dividends")
+        ml = load_market(a.store, a.asset_class, "1H", a.resample, a.clock_shift)
+        costs, priced = load_cost_table(a.costs)
+        raw, version = ml.bars.filter(pl.col("symbol").is_in(sorted(priced))), ml.version
+        mem = static_membership(raw)
+    else:
+        load = load_store(a.store, a.timeframe)
+        raw, version = load.bars, load.version
+        raw = resample_bars(raw, a.resample, a.clock_shift) if a.resample else shift_clock(raw, a.clock_shift)
+        check_no_straddle(raw, a.resample or a.timeframe.lower())
+        if a.resample or a.clock_shift != "0h":
+            version = f"{version}-{a.resample or a.timeframe}-shift{a.clock_shift}"
+        mem = pl.read_parquet(a.membership) if a.membership else None
+        costs = (CostModel.moneta_share_cfd_proxy() if a.costs == "moneta" else CostModel.flat(5.0)
+                 if a.costs == "flat5" else load_cost_overrides(a.costs, CostModel.moneta_share_cfd_proxy()))
     bars = add_adj_factor(raw, divs)
-    mem = pl.read_parquet(a.membership) if a.membership else None
-    costs = (CostModel.moneta_share_cfd_proxy() if a.costs == "moneta" else CostModel.flat(5.0) if a.costs == "flat5"
-             else load_cost_overrides(a.costs, CostModel.moneta_share_cfd_proxy()))
     todo = new_bars(bars, st.last_day, datetime.fromisoformat(a.until) if a.until else None, a.skip_last)
     live = a.broker == "mt5"
     if live and len(todo) > 1:

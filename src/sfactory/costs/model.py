@@ -84,3 +84,23 @@ def load_cost_overrides(path, base: CostModel | None = None) -> CostModel:
                                              g("slippage_bps", d.slippage_bps), g("swap_long_pct", d.swap_long_pct),
                                              g("swap_short_pct", d.swap_short_pct))
     return CostModel(d, over, base.stress, base.day_count)
+
+
+COST_FIELDS = ("spread_bps", "commission_bps", "slippage_bps", "swap_long_pct", "swap_short_pct")
+
+
+def load_cost_table(path) -> tuple[CostModel, set]:
+    """Strict per-symbol costs (FX / index / metal CFDs): every row needs all five cost columns, and there is no
+    usable default - the model's default is NaN, so a symbol without a row can never be priced silently (callers
+    keep only the returned symbols). Returns (model, symbols with a cost row)."""
+    import csv
+
+    over = {}
+    with open(path, encoding="utf-8", newline="") as fh:
+        for n, row in enumerate(csv.DictReader(fh), start=2):
+            empty = [k for k in COST_FIELDS if row.get(k) in (None, "")]
+            if empty:
+                raise ValueError(f"{path} line {n} ({row.get('symbol')}): missing {empty}")
+            over[row["symbol"]] = SymbolCost(*(float(row[k]) for k in COST_FIELDS))
+    nan = float("nan")
+    return CostModel(SymbolCost(nan, nan, nan, nan, nan), over), set(over)
