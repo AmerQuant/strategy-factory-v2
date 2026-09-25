@@ -334,8 +334,9 @@ def open_phase(state: DailyState, arrays: dict[str, SymbolArrays], today: date, 
 
 def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: pl.DataFrame,
                 membership: pl.DataFrame | None, today: date, cost_model=None, regime=None,
-                data_version: str = "live", lot_step: float = 1e-9) -> dict:
-    """After today's close: refresh the book at a DP, then plan the next open."""
+                data_version: str = "live", lot_step: float = 1e-9, halt: str | None = None) -> dict:
+    """After today's close: refresh the book at a DP, then plan the next open.
+    halt (kill switch): "halt_new" plans exits only; "flatten" closes every position at the next open."""
     if state.last_day is not None and _at(_d(state.last_day)) >= _at(today):
         raise ValueError(f"close of {today} already processed (last {state.last_day})")
     if state.pending:
@@ -363,8 +364,11 @@ def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: p
     ov_report = _overlays(state, today)
     if ov_report:
         report["overlays"] = ov_report
-    plan = pt.plan(known, state.book, today, lot_step=lot_step, opened_with=state.opened_with,
-                   weights=state.weights, row_scale=state.row_scale)
+    exit_only = set(state.book) if halt else frozenset()
+    plan = pt.plan(known, state.book, today, exit_only=exit_only, lot_step=lot_step, opened_with=state.opened_with,
+                   weights=state.weights, row_scale=state.row_scale, flatten=halt == "flatten")
+    if halt:
+        report["halt"] = halt
     for o in plan.orders:
         if o.intent == "open":
             state.opened_with[(o.row, o.symbol)] = state.book[o.row]
@@ -376,14 +380,14 @@ def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: p
 
 def bar_step(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: pl.DataFrame,
              membership: pl.DataFrame | None, bar, broker, live: bool = False, cost_model=None, regime=None,
-             data_version: str = "live", lot_step: float = 1e-9) -> dict:
+             data_version: str = "live", lot_step: float = 1e-9, halt: str | None = None) -> dict:
     """One intraday bar (or one day). Paper (`live=False`): fill the pending orders at this bar's open, then plan
     at its close - the research timing. Live: the job runs right after `bar` closed; plan at its close, then
     execute at once at market (the next bar's open, which does not exist in the data yet)."""
     if not live:
         return daily_step(state, arrays, bars_hist, membership, bar, broker, cost_model, regime, data_version,
-                          lot_step)
-    rep = close_phase(state, arrays, bars_hist, membership, bar, cost_model, regime, data_version, lot_step)
+                          lot_step, halt)
+    rep = close_phase(state, arrays, bars_hist, membership, bar, cost_model, regime, data_version, lot_step, halt)
     a = next(iter(arrays.values()), None)
     nxt = _next_bar(a.dates[a.dates <= np.datetime64(bar)]).astype(object) if a is not None else bar
     rec = open_phase(state, arrays_upto(arrays, bar), nxt, broker, cost_model)
@@ -394,10 +398,10 @@ def bar_step(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: pl.D
 
 def daily_step(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: pl.DataFrame,
                membership: pl.DataFrame | None, today: date, broker, cost_model=None, regime=None,
-               data_version: str = "live", lot_step: float = 1e-9) -> dict:
+               data_version: str = "live", lot_step: float = 1e-9, halt: str | None = None) -> dict:
     """Paper mode in one call: fill yesterday's plan at today's open, then plan at today's close."""
     rec = open_phase(state, arrays, today, broker, cost_model)
-    rep = close_phase(state, arrays, bars_hist, membership, today, cost_model, regime, data_version, lot_step)
+    rep = close_phase(state, arrays, bars_hist, membership, today, cost_model, regime, data_version, lot_step, halt)
     rep.update({"reconciled": rec["reconciled"], "diffs": rec["diffs"]})
     state.log.append({k: rep[k] for k in ("day", "reconciled", "orders", "open_positions")})
     return rep
