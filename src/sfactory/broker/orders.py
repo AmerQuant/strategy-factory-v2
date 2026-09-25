@@ -78,7 +78,7 @@ class RowBook:
             return
         p = self.positions.pop(o.symbol)
         gross = p.qty * (rf.price - p.entry_px)
-        nights = (rf.fill_date - p.entry_date).days if rf.fill_date and p.entry_date else 0
+        nights = (_day(rf.fill_date) - _day(p.entry_date)).days if rf.fill_date and p.entry_date else 0
         fin = abs(p.qty) * p.entry_px * swap_pct / 100 / day_count * nights
         self.closed.append({"row": self.row, "symbol": o.symbol, "signal_date": p.signal_date,
                             "entry_date": p.entry_date, "exit_date": rf.fill_date, "entry_px": p.entry_px,
@@ -98,6 +98,11 @@ class RowBook:
                 p.dividends += cash
                 tot += cash
         return tot
+
+
+def _day(d):
+    """Calendar day of a date or datetime (swap accrues per calendar-day boundary, as in research)."""
+    return d.date() if hasattr(d, "hour") else d
 
 
 def net_orders(orders: list[Order]) -> list[NetOrder]:
