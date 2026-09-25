@@ -15,7 +15,8 @@
    The same budget is used for the path-2 test, so rows are accepted for the portfolio that will be traded.
 6. Reported diagnostics: Hansen SPA (any configuration vs cash, combined vs all-rows equal weight) and family
    ensembles (design 13.3: equal-weight of a family x direction vs its best member).
-Everything here uses dev-period OOS only; the holdout stays locked.
+Everything here uses dev-period OOS only; the holdout stays locked. `workers` != 1 precomputes the robustness
+variant caches in parallel (ADR-0004).
 """
 from __future__ import annotations
 
@@ -43,7 +44,7 @@ def _sharpe_ann(x: np.ndarray) -> float:
 def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs=("A1",),
                 registry: Registry | None = None, q: float = 0.10, dsr_min: float = 0.95,
                 dd_max: float = 0.35, corr_cap: float = 0.6, divs_dev: pl.DataFrame | None = None,
-                spa_boot: int = 300, budget: RiskBudget | None = None) -> dict:
+                spa_boot: int = 300, budget: RiskBudget | None = None, workers: int = 1) -> dict:
     registry = registry or Registry()
     folds = fm.dev_folds()
     configs = [replace(r, rung=g) for r in rows for g in rungs]
@@ -87,7 +88,8 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
     robustness = {}
     if divs_dev is not None:
         for i in list(accepted):
-            rep = run_robustness(fm, cache, bars_dev, divs_dev, membership, configs[i], dd_limit=dd_max)
+            rep = run_robustness(fm, cache, bars_dev, divs_dev, membership, configs[i], dd_limit=dd_max,
+                                 workers=workers)
             robustness[table[i]["row"]] = {"mandatory": rep["mandatory"], "warnings": rep["warnings"],
                                            "cost_x1.5_expectancy": rep["cost_x1.5"]["expectancy"],
                                            "delay_keep": rep["delay_1bar"]["keep"], "mc_dd_p95": rep["mc_dd_p95"]}
