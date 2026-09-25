@@ -10,14 +10,16 @@
      Sharpe(combined + row) - Sharpe(combined) entirely above zero
 4. Robustness gate (design 10.3): accepted rows must pass the mandatory robustness tests (cost x1.5, MC
    drawdown); warnings are kept for the analyst. Needs `divs_dev`; skipped when it is not given.
-5. Combined policy over accepted rows: WF-native greedy selection with correlation cap + inverse-vol weights.
+5. Combined policy over accepted rows: WF-native greedy selection with correlation cap + inverse-vol weights,
+   optionally under a cross-row risk budget (per-row cap, per-family cap, portfolio vol target; portfolio.combine).
+   The same budget is used for the path-2 test, so rows are accepted for the portfolio that will be traded.
 6. Reported diagnostics: Hansen SPA (any configuration vs cash, combined vs all-rows equal weight) and family
    ensembles (design 13.3: equal-weight of a family x direction vs its best member).
 Everything here uses dev-period OOS only; the holdout stays locked.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import numpy as np
 import polars as pl
@@ -27,7 +29,7 @@ from sfactory.evaluation.robustness import run_robustness
 from sfactory.policy.catalog import taxonomy
 from sfactory.policy.ensemble import run_row_any
 from sfactory.policy.ladder import LadderConfig
-from sfactory.portfolio.combine import combine_rows, effective_n, family_ensemble
+from sfactory.portfolio.combine import RiskBudget, combine_rows, effective_n, family_ensemble
 from sfactory.registry.repo import Registry
 from sfactory.stats.core import moments, sharpe_diff_ci, sharpe_report
 from sfactory.stats.multiple import benjamini_hochberg, spa_test
@@ -41,7 +43,7 @@ def _sharpe_ann(x: np.ndarray) -> float:
 def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs=("A1",),
                 registry: Registry | None = None, q: float = 0.10, dsr_min: float = 0.95,
                 dd_max: float = 0.35, corr_cap: float = 0.6, divs_dev: pl.DataFrame | None = None,
-                spa_boot: int = 300) -> dict:
+                spa_boot: int = 300, budget: RiskBudget | None = None) -> dict:
     registry = registry or Registry()
     folds = fm.dev_folds()
     configs = [replace(r, rung=g) for r in rows for g in rungs]
@@ -66,14 +68,18 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
     for i in path1:
         table[i]["path"] = "standalone"
     fs, fe = [f.dp for f in folds], [f.oos_end for f in folds]
-    base = combine_rows(mat[:, path1], dates, fs, fe, corr_cap).daily if path1 else np.zeros(len(dates))
+
+    def comb(idx):
+        return combine_rows(mat[:, idx], dates, fs, fe, corr_cap, budget=budget, families=[fam[i] for i in idx])
+
+    base = comb(path1).daily if path1 else np.zeros(len(dates))
     accepted = list(path1)
     for t in sorted(table, key=lambda t: -t["sharpe"]):
         i = t["i"]
         if i in accepted or t["expectancy"] <= 0 or t["max_dd"] > dd_max:
             continue
         trial = accepted + [i]
-        cand = combine_rows(mat[:, trial], dates, fs, fe, corr_cap).daily
+        cand = comb(trial).daily
         lo, _ = sharpe_diff_ci(cand, base, seed=i)
         if lo > 0:
             t["path"] = "portfolio"
@@ -89,7 +95,7 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
             if not rep["passed"]:
                 table[i]["path"] = f"{table[i]['path']}-rejected_by_robustness"
                 accepted.remove(i)
-    combined = combine_rows(mat[:, accepted], dates, fs, fe, corr_cap) if accepted else None
+    combined = comb(accepted) if accepted else None
     all_eq = mat.mean(axis=1)
     spa_cash = spa_test(mat, np.zeros(len(dates)), n_boot=spa_boot)
     spa_comb = spa_test(combined.daily, all_eq, n_boot=spa_boot) if combined else None
@@ -109,7 +115,11 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
         "combined": {"sharpe": _sharpe_ann(combined.daily) if combined else 0.0,
                      "effective_n": effective_n(mat[:, accepted]) if len(accepted) > 1 else float(len(accepted)),
                      "selected_per_fold": [[accepted[j] for j in sel] for sel in combined.selected]
-                     if combined else []},
+                     if combined else [],
+                     "weights_per_fold": [{table[accepted[j]]["row"]: round(float(w), 6) for j, w in fw.items()}
+                                          for fw in combined.weights] if combined else [],
+                     "leverage_per_fold": list(combined.leverage) if combined else [],
+                     "risk_budget": asdict(budget) if budget is not None else None},
         "benchmark_all_equal": _sharpe_ann(all_eq),
         "effective_n_all": effective_n(mat),
         "daily": mat, "dates": dates, "results": results,
