@@ -22,6 +22,14 @@ runs its course after the next DP), even if the row's threshold / exit / filter 
 the book. New entries use the current book. Tested over six DPs with changing parameters: no position ever
 lost its exit rule, and a run that saves and reloads the state every day gives the same trades as one in memory.
 
+## Fast clock (edge on/off) in the live book
+A policy entry may carry an accepted mechanism: `{"config": {...}, "activation": {...ActivationConfig}}` (from
+`run_real --analyze-accepted`, chosen by the analyst). At every sub-DP (the DP, then every `sub_months`) the job
+computes per-symbol weights with the research `decide_sub` on the shadow trades closed before the sub-DP
+(trendiness calibrated in-fold at the DP; hysteresis state persisted). Weight 0 blocks new entries for the symbol,
+other weights scale the quantity; exits are never affected. Tested: the live number of active symbols equals the
+research `run_activation` at all 24 sub-DPs of a two-year replay.
+
 ## Commands
 ```
 uv run python scripts/run_daily.py --init --state state.json --policy holdout.json --first-dp 2026-10-01
@@ -34,4 +42,4 @@ The MT5 password comes from `SF_MT5_PASSWORD`. Reports: `--report-dir` gets `<da
 ## Not yet
 - The store must be updated before each close run (v1's data refresh); the job does not download.
 - Scheduling (Windows Task Scheduler at the open and after the close) is the owner's setup.
-- The fast clock (edge on/off) and sizing overlays are not applied in the live book yet.
+- Daily sizing overlays (vol target, drawdown brake) are not applied in the live book yet (trade-level vol sizing is).

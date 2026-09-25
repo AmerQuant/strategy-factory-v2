@@ -128,3 +128,27 @@ def test_run_daily_script_on_a_fake_v1_store(tmp_path):
     st = DailyState.load(state)
     assert st.last_dp == "2012-01-01" and len(st.log) == len(days) and all(x["reconciled"] for x in st.log)
     assert len(st.closed_trades()) > 5 and len(list((tmp_path / "rep").glob("*.json"))) == len(days)
+
+
+def test_fast_clock_in_the_live_book_matches_research(mkt):
+    from sfactory.engine.cache import TradeCache
+    from sfactory.policy.edge_state import ActivationConfig, run_activation
+    from sfactory.timeline.folds import FoldConfig, FoldManager
+    bars, arrays, mem = mkt
+    cfg = LadderConfig(rung="A1", method="rsi", min_price=0.0, min_dollar_vol=0.0, min_is_trades=10)
+    act = ActivationConfig("two_clock", window_months=6, min_trades=3)
+    fm = FoldManager(FoldConfig(date(2010, 1, 4), date(2013, 1, 1), date(2015, 1, 1), date(2016, 1, 1),
+                                dp_months=6, is_years=3))
+    res = run_activation(fm, TradeCache(arrays, "r", cost_model=COST), bars, mem, cfg, act)
+    research = {s["dp"]: s["n_active"] for d in res.decisions for s in d["sub_dps"]}
+    st = new_state([(cfg, act)], first_dp=date(2013, 1, 1), dp_months=6, is_years=3, data_start=date(2010, 1, 4))
+    live = {}
+    for day in _days(arrays, date(2013, 1, 2), date(2015, 1, 1)):
+        br = SimulatedBroker(COST)
+        br.net = dict(st.sim_net)
+        rep = daily_step(st, arrays, bars.filter(pl.col("date") <= day), mem, day, br, cost_model=COST)
+        if "fast_clock" in rep:
+            live[rep["fast_clock"]["sub_dp"]] = rep["fast_clock"]["rows"][cfg.rid]["n_active"]
+    assert len(live) == 24 and live == research
+    assert any(v < 10 for v in live.values())                  # the mechanism did switch symbols off
+    assert DailyState.from_json(st.to_json()).weights == st.weights
