@@ -8,7 +8,8 @@ import { type Meta, useApi, useSave } from "@/lib/api";
 import { type Row, RowsEditor } from "./RowsEditor";
 
 type Doc = Record<string, unknown> & { id: string; name: string };
-type FieldSpec = { key: string; label: string; type: "text" | "number" | "optnumber" | "bool" | "select" | "textarea";
+type FieldSpec = { key: string; label: string;
+  type: "text" | "number" | "optnumber" | "bool" | "select" | "textarea" | "strlist" | "numlist";
   options?: [string, string][]; hint?: string };
 
 const KIND_FLAGS: Record<string, string[]> = {
@@ -17,6 +18,9 @@ const KIND_FLAGS: Record<string, string[]> = {
     "analyze-accepted", "max-row-weight", "max-family-weight", "target-vol", "workers"],
   run_daily: ["state", "init", "policy", "first-dp", "dp-months", "is-years", "store", "membership", "dividends", "costs", "broker",
     "phase", "day", "report-dir", "mt5-login", "mt5-server", "symbol-map", "dry-run"],
+  run_intraday: ["state", "init", "policy", "first-dp", "dp-months", "is-years", "store", "timeframe", "resample", "clock-shift",
+    "membership", "dividends", "costs", "broker", "until", "skip-last", "report-dir", "mt5-login", "mt5-server", "symbol-map", "dry-run"],
+  check_survivorship: ["store", "timeframe", "membership", "out"],
   convert_costs: ["v1-costs", "universe", "store", "prices", "notional", "out", "map-out"],
   bench_speed: ["symbols", "store", "workers", "rows"],
 };
@@ -71,10 +75,34 @@ const SPECS: Record<string, Spec> = {
       ["Mode", (d) => (d.dry_run ? <Tag tone="warn">dry run</Tag> : <Tag tone="neg">live orders</Tag>)]],
     blank: () => ({ id: "", name: "", description: "", kind: "sim", login: null, server: "", symbol_map: "", dry_run: true }),
   },
+  schedules: {
+    title: "Schedules", single: "schedule", sub: "Chains of job presets on New York market time, run by the scheduler service (python -m sfactory.scheduler).",
+    fields: [
+      { key: "steps", label: "Job presets, in order", type: "strlist", hint: "Preset ids separated by commas; the chain stops at the first failure" },
+      { key: "enabled", label: "Enabled", type: "bool" },
+      { key: "kind", label: "Trigger", type: "select", options: [["daily", "Daily at a time"], ["bars", "After every bar"]] },
+      { key: "tz", label: "Time zone", type: "text", hint: "Market time; daylight saving is followed" },
+      { key: "time", label: "Time (daily)", type: "text", hint: "HH:MM, e.g. 16:30 after the close" },
+      { key: "weekdays", label: "Weekdays", type: "numlist", hint: "0 = Monday ... 6 = Sunday" },
+      { key: "every_minutes", label: "Bar length in minutes (bars)", type: "number" },
+      { key: "delay_minutes", label: "Delay after the bar close (bars)", type: "number", hint: "Time for the data refresh" },
+      { key: "session_start", label: "Session start (bars)", type: "text", hint: "HH:MM, start of the first bar" },
+      { key: "session_end", label: "Session end (bars)", type: "text", hint: "HH:MM, close of the last bar" },
+      { key: "misfire", label: "If a run was missed", type: "select", options: [["skip", "Record it as missed (live)"], ["run_once", "Run it once late (paper)"]] },
+      { key: "grace_minutes", label: "Grace period in minutes", type: "number", hint: "Later than this counts as missed" },
+    ],
+    columns: [["Trigger", (d) => d.kind === "daily" ? `daily ${d.time}` : `every ${d.every_minutes} min + ${d.delay_minutes}`],
+      ["Steps", (d) => (d.steps as string[]).join(" → ")],
+      ["State", (d) => (d.enabled ? <Tag tone="pos">enabled</Tag> : <Tag>paused</Tag>)]],
+    blank: () => ({ id: "", name: "", description: "", enabled: true, steps: [], kind: "daily", time: "16:30", tz: "America/New_York",
+      weekdays: [0, 1, 2, 3, 4], every_minutes: 60, session_start: "09:30", session_end: "16:00", delay_minutes: 5,
+      misfire: "skip", grace_minutes: 10 }),
+  },
   job_presets: {
     title: "Job presets", single: "job preset", sub: "Saved command lines for the platform scripts. Start them from Jobs.",
     fields: [{ key: "kind", label: "Script", type: "select", options: [["run_real", "Research run (run_real)"],
-      ["run_daily", "Daily paper / live job (run_daily)"], ["convert_costs", "Moneta cost converter"], ["bench_speed", "Speed benchmark"]] }],
+      ["run_daily", "Daily paper / live job (run_daily)"], ["run_intraday", "Intraday paper / live job (run_intraday)"],
+      ["check_survivorship", "Survivorship check"], ["convert_costs", "Moneta cost converter"], ["bench_speed", "Speed benchmark"]] }],
     columns: [["Script", (d) => String(d.kind)], ["Arguments", (d) => Object.keys(d.args as object).length]],
     blank: () => ({ id: "", name: "", description: "", kind: "run_real", args: {} }),
   },
@@ -159,12 +187,27 @@ function FieldInput({ f, value, onChange }: { f: FieldSpec; value: unknown; onCh
   if (f.type === "select") return (
     <Field label={f.label} hint={f.hint}><Select value={String(value)} onChange={(e) => onChange(e.target.value)}>
       {f.options?.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>);
+  if (f.type === "strlist" || f.type === "numlist") return (
+    <ListInput f={f} value={(value as unknown[]) ?? []} onChange={onChange} />);
   if (f.type === "textarea") return <Field label={f.label} hint={f.hint}><Textarea value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} /></Field>;
   const numeric = f.type === "number" || f.type === "optnumber";
   return (
     <Field label={f.label} hint={f.hint}>
       <Input type={numeric ? "number" : "text"} step="any" value={value === null || value === undefined ? "" : String(value)}
         onChange={(e) => onChange(numeric ? (e.target.value === "" ? (f.type === "optnumber" ? null : 0) : Number(e.target.value)) : e.target.value)} />
+    </Field>
+  );
+}
+
+function ListInput({ f, value, onChange }: { f: FieldSpec; value: unknown[]; onChange: (v: unknown) => void }) {
+  const [text, setText] = useState(value.join(", "));
+  const parse = (t: string) => {
+    const parts = t.split(",").map((x) => x.trim()).filter(Boolean);
+    return f.type === "numlist" ? parts.map(Number).filter((x) => Number.isFinite(x)) : parts;
+  };
+  return (
+    <Field label={f.label} hint={f.hint}>
+      <Input value={text} onChange={(e) => { setText(e.target.value); onChange(parse(e.target.value)); }} />
     </Field>
   );
 }
