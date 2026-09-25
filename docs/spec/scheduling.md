@@ -1,66 +1,64 @@
-# Scheduling the jobs - options (owner's decision, nothing implemented yet)
+# Scheduling the jobs
 
-What has to run, on the Windows machine that also runs the MT5 terminal:
-| job | when | order |
-|---|---|---|
-| v1 data refresh | after the US close (daily); after every bar (intraday) | first |
-| `run_daily.py --phase close` | after the refresh, before the next open | second |
-| `run_daily.py --phase open` (MT5) | at the US open | - |
-| `run_intraday.py --broker mt5` | right after every 1H / 4H bar, after the refresh | second |
-| research runs (`run_real.py`) | on demand or weekly | anytime |
+Chosen: **option C, a separate scheduler service**, built on the standard library (own market-time triggers; the
+only new package is `tzdata`, on Windows). Code: `src/sfactory/scheduler/` (`triggers.py`, `service.py`,
+`python -m sfactory.scheduler`). Tests: `tests/test_scheduler.py`. Options A (Task Scheduler) and B (inside the web
+server) were rejected: A keeps schedules outside the dashboard and needs manual DST handling, B makes trading depend
+on the web server staying up.
 
-Constraints from the code as it stands:
-- Paper jobs catch up missed days / bars by themselves; a missed **live** intraday bar stops the job (it refuses
-  to execute old bars), and a missed daily open leaves orders pending until the next open. So reliability of the
-  trigger matters more for live than for paper.
-- Times are New York market times; the scheduler must follow US daylight saving (the machine's clock may not be in
-  New York time).
-- The refresh must finish before the job starts (a chain, not two independent timers).
-- The dashboard already runs jobs from presets and keeps their logs (`web/jobs.py`); anything that reuses it gets
-  the logs in the Jobs page for free.
+## What it does
+- Schedules are admin documents (Admin, Schedules): a chain of job presets + a trigger + a missed-run rule.
+- **Triggers** (wall-clock time in `America/New_York` by default, so US daylight saving is automatic):
+  - `daily` - at `time` on `weekdays` (0 = Monday), e.g. 16:30 after the close, 09:31 for the MT5 open phase;
+  - `bars` - after every bar of the session closes plus `delay_minutes` (time for the data refresh); bars start
+    at `session_start` and are `every_minutes` long, the last one closes at `session_end`.
+  Exchange holidays are not modelled: the jobs treat a day without new data as a no-op (run_daily and
+  run_intraday both do).
+- **A fire** runs the chain's presets one after the other through the dashboard's job manager (each step appears in
+  Jobs with its log) and stops at the first failure.
+- **Rules**:
+  - a fire missed by more than `grace_minutes` (service down, machine asleep) is recorded as `missed`, or with
+    `misfire: run_once` run once late - use that only for paper jobs, never for live;
+  - a schedule whose previous run is still going is not started again (`skipped`);
+  - saving a new or edited schedule plans it from now; it never fires on save.
+- Preset arguments may contain `{today}` (the fire's local date in the schedule's time zone) and `{now}`.
+- The Jobs page shows the service (running / not running, last tick), each schedule's next and last run, and the
+  logs of the last run's steps. The dashboard never marks a job the scheduler is running as "unknown".
+- Files in the config directory: `scheduler/state.json` (next fire per schedule), `scheduler/runs/*.json`,
+  `scheduler/heartbeat.json`. A second service on the same directory is refused while the heartbeat is fresh.
 
-## A. Windows Task Scheduler
-One task per job, each calling a small `.cmd` that runs the refresh and then the job.
-- For: part of the OS, starts with Windows, no extra process to keep alive, runs even if the dashboard is down;
-  "run task as soon as possible after a scheduled start is missed" covers a sleeping machine.
-- Against: schedules live outside the platform (not visible / editable in the dashboard); triggers are in the
-  machine's local time, so New York DST shifts need either a New York machine clock or tasks adjusted twice a year;
-  hourly triggers inside market hours need a repeat pattern per task; logs only in files unless the job reports to
-  the dashboard.
-- Implementation: a `scripts/make_tasks.py` that writes the `.cmd` wrappers and `schtasks /create` commands (or task
-  XML) from the job presets; nothing changes in the server. Smallest amount of code.
+## Run it
+```
+uv sync --group web                      # the service reads the admin documents (pydantic)
+uv run python -m sfactory.scheduler --config D:/sf2_admin [--tick 15]
+```
 
-## B. Scheduler inside the web server (APScheduler)
-Schedules become a document type in the admin (cron expression + preset + time zone); the server starts the preset
-through the existing job manager when a schedule fires.
-- For: everything in one place - create, edit, pause schedules and see every run and its log in the dashboard;
-  cron triggers in `America/New_York` follow DST automatically; chaining is just "refresh preset, then job preset".
-- Against: the web server becomes critical infrastructure - if it is stopped or crashes, nothing trades; it must run
-  as a single process (several workers would fire every schedule several times); one new dependency
-  (`apscheduler`); a missed fire while the server was down needs an explicit catch-up rule.
-- Implementation: `Schedule` schema + collection, a scheduler started in `create_app` (single-instance lock file),
-  "next run" / "last run" columns in the Jobs page, tests with a fake clock. Medium amount of code.
+### Keeping it running on Windows
+- **Paper only**: a Windows service is simplest, e.g. with NSSM:
+  ```
+  nssm install sfactory-scheduler D:\...\strategy-factory-v2\.venv\Scripts\python.exe "-m sfactory.scheduler --config D:\sf2_admin"
+  nssm set sfactory-scheduler AppDirectory D:\...\strategy-factory-v2
+  nssm start sfactory-scheduler
+  ```
+- **Live MT5**: not verified yet. The MetaTrader5 Python package talks to a terminal running in the user's desktop
+  session, and Windows services run in a separate session, so a service may not reach the terminal. Safer: start
+  the scheduler in your own session at log on (Task Scheduler, trigger "At log on", action the same command,
+  "restart on failure" on), with the MT5 terminal set to start at log on too. Test with `--dry-run` presets first.
+- `SF_MT5_PASSWORD` must be in the environment of whatever starts the scheduler (user environment variable).
 
-## C. Separate scheduler service
-The same schedule documents as B, but executed by a small standalone process (`python -m sfactory.scheduler`),
-installed as a Windows service (for example with NSSM); the dashboard only edits schedules and shows the runs.
-- For: schedules are managed in the dashboard like B, but trading does not depend on the web server; the service
-  restarts automatically; one clear owner of "what runs when".
-- Against: one more process to install and monitor; the most code of the three; the service and the dashboard must
-  share the config directory and job records (they already live in files, so this is straightforward).
-- Implementation: B's schedule model + a stdlib loop (or APScheduler) in its own module, a heartbeat file the
-  dashboard shows ("scheduler alive, last tick"), the service install notes. Largest amount of code.
-
-## Comparison
-| | A. Task Scheduler | B. in the web server | C. separate service |
+## Suggested schedules
+| schedule | trigger | steps (presets) | missed run |
 |---|---|---|---|
-| schedules visible / editable in the dashboard | no | yes | yes |
-| trading keeps running if the dashboard is down | yes | no | yes |
-| New York DST handled | manually | automatically | automatically |
-| refresh -> job chaining | in the `.cmd` | in the schedule | in the schedule |
-| extra processes to keep alive | none | none (but the server must stay up) | one service |
-| new dependencies | none | apscheduler | none or apscheduler |
-| code to write | small | medium | largest |
+| paper, daily | daily 16:30, Mon-Fri | `run_daily --state paper.json --store <store> --broker sim` | run once late |
+| live MT5, open | daily 09:31, Mon-Fri | `run_daily ... --broker mt5 --phase open --day {today}` | skip |
+| live MT5, close | daily 16:30, Mon-Fri | `run_daily ... --broker mt5 --phase close` | skip |
+| paper, 1H | bars 60 min, 09:30-16:00, delay 5 | `run_intraday --state s1h.json --store <store> --timeframe 1H` | run once late |
+| live, 1H | bars 60 min, 09:30-16:00, delay 5 | `run_intraday ... --broker mt5` | skip |
+| research, weekly | daily 18:00, Sat | `check_survivorship ...`, then `run_real ...` | run once late |
+The MT5 open phase needs `--day {today}`: at the open the store's last day is still yesterday.
 
-Whatever is chosen, the jobs themselves do not change: they are already restartable, idempotent per day / bar and
-refuse unsafe catch-up in live mode.
+## Open
+- A job type for the v1 data refresh (its command is on the owner's machine): once it exists, a chain can be
+  "refresh, then job" inside one schedule. Until then the refresh must run before the schedule's time (the
+  `delay_minutes` of a bars trigger leaves room for it).
+- Alerts on failed / missed runs (the next package: alerts + kill switch).
