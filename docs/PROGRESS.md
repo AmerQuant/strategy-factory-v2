@@ -13,7 +13,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 200 passing (vectorbt cross-check runs when the `crosscheck` group is installed; web API tests with the `web` group) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 202 passing (vectorbt cross-check runs when the `crosscheck` group is installed; web API tests with the `web` group) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -46,7 +46,7 @@
 - paper cash flows: dividends on ex-dates and modelled swap in the row books (research parity per share tested); MT5 real commission / fee from the deal history, deal_costs and open_swap reports
 - robustness variant caches (cost stress, delay, noise) precomputed in parallel with --workers
 - intraday: session-close exit (`flat_eod`), DST-aware broker clock (`clock_shift="ny"`), intraday paper planning with research parity (docs/spec/intraday.md)
-- web admin + dashboard: FastAPI backend (validated config documents, runs / registry / live readers, job runner) + React/TS dashboard with light and dark mode (docs/spec/web.md)
+- web admin + dashboard: FastAPI backend (validated config documents, runs / registry / live readers, job runner) + React/TS dashboard with light and dark mode; optional token authentication with sign-in screen, refused network bind without a token (docs/spec/web.md)
 - survivorship check of the store: delisting profile, heuristic verdict, direct membership leaks; in every run_real evidence + caveat; `scripts/check_survivorship.py` (docs/spec/survivorship.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
@@ -66,9 +66,10 @@
 5. ~~Paper dividends; MT5 commission / swap from deal history~~ (done)
 6. ~~Precompute for the robustness caches~~ (done)
 7. ~~Intraday: session exits, DST-aware clock, intraday planner~~ (done; per-bar scheduler open)
-8. ~~Web admin + dashboard~~ (done; auth, CI frontend build and preset scheduling open, see docs/spec/web.md)
+8. ~~Web admin + dashboard~~ (done)
 9. ~~Survivorship check of the store~~ (done)
-10. Next: web authentication; intraday per-bar scheduler; daily sizing overlays in the live book; preset scheduling in the dashboard
+10. ~~Web authentication~~ (done: token + session cookie)
+11. Next: daily sizing overlays in the live book; intraday per-bar scheduler; preset scheduling in the dashboard
 
 ## Next on the owner's machine
 1. Survivorship check first: `scripts/check_survivorship.py --store <store> [--membership ...]` (docs/spec/survivorship.md)
@@ -83,4 +84,4 @@
 10. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
 11. Costs: `scripts/convert_moneta_costs.py` (see docs/spec/costs_v1.md), then `run_real.py --costs costs_moneta.csv`
 12. Paper trading: `scripts/run_daily.py --init ...` with the holdout policy, then one run per trading day (docs/spec/daily.md)
-13. Dashboard: `uv sync --group web`, `cd web && npm install && npm run build`, `uv run python -m sfactory.web --config <dir>`; commit web/package-lock.json
+13. Dashboard: `uv sync --group web`, `cd web && npm install && npm run build`, `uv run python -m sfactory.web --config <dir>` (add `SF_WEB_TOKEN` + `--host 0.0.0.0` for network access); commit web/package-lock.json
