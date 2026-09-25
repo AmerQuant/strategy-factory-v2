@@ -8,7 +8,9 @@ Per trading day:
    research-parity planner (`forward.paper.plan_day`). Every open position exits by the setting it was opened
    with (`opened_with`), even when its row changed at the DP or left the book. Rows that carry an accepted
    fast-clock mechanism (policy entry {"config", "activation"}) get per-symbol weights at every sub-DP from the
-   same `decide_sub` as research; a weight only gates / scales new entries;
+   same `decide_sub` as research; a weight only gates / scales new entries. Rows with a daily sizing overlay
+   (policy entry "overlay": vol target and / or drawdown brake) scale their new entries by the factor the research
+   overlay would apply tomorrow, computed with the same functions on the row's realised daily pnl;
 3. persist everything in a JSON state file, so the job is restartable and auditable (every day appends a log line).
 
 The state holds the frozen policy (row configs as dicts, as `evaluation.holdout.freeze_policy` writes them), the
@@ -24,6 +26,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import polars as pl
 
 from sfactory.broker.orders import Order, RowBook, VirtualPosition
@@ -32,6 +35,7 @@ from sfactory.forward.live import BookEntry, book_diff, decide_book, live_fold
 from sfactory.forward.paper import PaperTrader, _exit_spec, arrays_upto
 from sfactory.policy.edge_state import ActivationConfig, calibrate_trendiness, decide_sub
 from sfactory.policy.ladder import LadderConfig
+from sfactory.portfolio.sizing import drawdown_brake, vol_target_daily
 from sfactory.signals.methods import EntrySpec
 from sfactory.signals.specs import ExitSpec, FilterSpec
 from sfactory.timeline.folds import FoldConfig, FoldManager, add_months
@@ -53,6 +57,49 @@ def config_from_dict(d: dict):
     if x.get("thresholds") is not None:
         x["thresholds"] = tuple(x["thresholds"])
     return LadderConfig(**x)
+
+
+OVERLAY_DEFAULTS = {"target_vol_daily": None, "lookback": 63, "lev_max": 2.0, "min_obs": 20,
+                    "dd_limit": None, "cut": 0.5, "resume": 0.5}
+
+
+def overlay_of(entry) -> dict | None:
+    """The daily sizing overlay of a policy entry ({"config", "overlay": {...}}), defaults filled; None if absent."""
+    if not isinstance(entry, dict) or not entry.get("overlay"):
+        return None
+    ov = {**OVERLAY_DEFAULTS, **entry["overlay"]}
+    unknown = set(ov) - set(OVERLAY_DEFAULTS)
+    if unknown:
+        raise ValueError(f"unknown overlay fields {sorted(unknown)}")
+    return ov
+
+
+def row_daily_pnl(closed: list, start: date, end: date) -> np.ndarray:
+    """Realised net pnl per business day (exit date) in [start, end], zeros on days without exits - the series the
+    research overlays run on."""
+    days = np.arange(np.datetime64(start, "D"), np.datetime64(end, "D") + 1)
+    days = days[np.is_busday(days)]
+    out = np.zeros(len(days))
+    for t in closed:
+        d = np.datetime64(str(t["exit_date"])[:10], "D")
+        i = int(np.searchsorted(days, d))
+        if i < len(days) and days[i] == d:
+            out[i] += float(t["net_pnl"])
+    return out
+
+
+def overlay_scale(daily: np.ndarray, ov: dict, capital: float) -> dict:
+    """Factor for the next day's new entries: research vol_target_daily and drawdown_brake evaluated one step past
+    the realised series (both only use days strictly before the one they size)."""
+    x = np.r_[daily, 0.0]
+    lev, exp = 1.0, 1.0
+    if ov["target_vol_daily"]:
+        _, lv = vol_target_daily(x, ov["target_vol_daily"], ov["lookback"], ov["lev_max"], ov["min_obs"])
+        lev = float(lv[-1])
+    if ov["dd_limit"]:
+        _, ex = drawdown_brake(x, capital, ov["dd_limit"], ov["cut"], ov["resume"])
+        exp = float(ex[-1])
+    return {"leverage": lev, "brake": exp, "scale": lev * exp}
 
 
 def policy_entries(policy: list) -> list[tuple]:
@@ -102,6 +149,7 @@ class DailyState:
     trend_cal: dict = field(default_factory=dict)      # fast clock: row -> in-fold trendiness calibration
     last_sub_dp: str | None = None
     div_day: str | None = None                         # last day whose dividends were accrued in the books
+    row_scale: dict = field(default_factory=dict)      # daily sizing overlays: row -> factor for new entries
 
     def to_json(self) -> dict:
         ow = _book_to_json({f"{r}|{s}": b for (r, s), b in self.opened_with.items()})
@@ -114,7 +162,8 @@ class DailyState:
                 "pending": [{**asdict(o), "signal_date": str(o.signal_date)} for o in self.pending],
                 "log": self.log, "last_day": self.last_day, "sim_net": self.sim_net,
                 "filled_day": self.filled_day, "weights": self.weights, "act_state": self.act_state,
-                "trend_cal": self.trend_cal, "last_sub_dp": self.last_sub_dp, "div_day": self.div_day}
+                "trend_cal": self.trend_cal, "last_sub_dp": self.last_sub_dp, "div_day": self.div_day,
+                "row_scale": self.row_scale}
 
     @classmethod
     def from_json(cls, d: dict) -> DailyState:
@@ -135,7 +184,8 @@ class DailyState:
         return cls(d["policy"], d["fold"], d["last_dp"], _book_from_json(d["book"]), ow, books,
                    [Order(**{**o, "signal_date": _d(o["signal_date"])}) for o in d["pending"]],
                    d["log"], d["last_day"], d.get("sim_net", {}), d.get("filled_day"), d.get("weights", {}),
-                   d.get("act_state", {}), d.get("trend_cal", {}), d.get("last_sub_dp"), d.get("div_day"))
+                   d.get("act_state", {}), d.get("trend_cal", {}), d.get("last_sub_dp"), d.get("div_day"),
+                   d.get("row_scale", {}))
 
     def save(self, path: str | Path) -> None:
         p = Path(path)
@@ -156,14 +206,17 @@ def _entry(r):
     if isinstance(r, dict):
         return r
     if isinstance(r, tuple):
-        cfg, act = r
-        return {"config": asdict(cfg), "activation": asdict(act) if act is not None else None}
+        cfg, act, *rest = r
+        e = {"config": asdict(cfg), "activation": asdict(act) if act is not None else None}
+        if rest and rest[0]:
+            e["overlay"] = dict(rest[0])
+        return e
     return asdict(r)
 
 
 def new_state(policy_rows: list, first_dp: date, dp_months: int = 6, is_years: int = 3,
               data_start: date = date(1990, 1, 1)) -> DailyState:
-    """policy_rows: configs, config dicts, or (config, ActivationConfig | None) pairs."""
+    """policy_rows: configs, config dicts, or (config, ActivationConfig | None[, overlay dict]) tuples."""
     return DailyState([_entry(r) for r in policy_rows],
                       {"data_start": str(data_start), "first_dp": str(first_dp), "dp_months": dp_months,
                        "is_years": is_years})
@@ -229,6 +282,19 @@ def _fast_clock(state: DailyState, known: TradeCache, today: date, new_dp: bool)
     return {"sub_dp": str(sub), "rows": out}
 
 
+def _overlays(state: DailyState, today: date) -> dict:
+    out = {}
+    start = date.fromisoformat(state.fold["first_dp"])
+    for entry, (cfg, _) in zip(state.policy, policy_entries(state.policy)):
+        ov = overlay_of(entry)
+        if ov is None:
+            continue
+        closed = state.books[cfg.rid].closed if cfg.rid in state.books else []
+        out[cfg.rid] = overlay_scale(row_daily_pnl(closed, start, today), ov, cfg.capital)
+    state.row_scale = {r: v["scale"] for r, v in out.items()}
+    return out
+
+
 # --- the day ----------------------------------------------------------------------------------------------
 def open_phase(state: DailyState, arrays: dict[str, SymbolArrays], today: date, broker, cost_model=None) -> dict:
     """Execute the orders planned at the previous close. Paper: at today's bar open (arrays through today);
@@ -278,8 +344,11 @@ def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: p
     pt = PaperTrader(None, books=state.books, div_day=_d(state.div_day))
     pt.accrue_dividends(arrays, today)             # live: the open ran before today's bar existed
     state.div_day = str(pt.div_day) if pt.div_day else state.div_day
+    ov_report = _overlays(state, today)
+    if ov_report:
+        report["overlays"] = ov_report
     plan = pt.plan(known, state.book, today, lot_step=lot_step, opened_with=state.opened_with,
-                   weights=state.weights)
+                   weights=state.weights, row_scale=state.row_scale)
     for o in plan.orders:
         if o.intent == "open":
             state.opened_with[(o.row, o.symbol)] = state.book[o.row]
