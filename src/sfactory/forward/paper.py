@@ -1,7 +1,8 @@
 """Paper / live daily cycle with research parity (design 15.1, roadmap package 6).
 
 Parity planner: the day's decisions come from the research engine itself. The arrays known at today's close are
-extended by one placeholder bar (next business day, open = close = today's close). On that extended series:
+extended by one placeholder bar (the next bar of the session calendar, open = close = the last close).
+On that extended series:
 - an entry signal at today's close is a trade whose `signal_date` is today (it would fill at the next open);
 - an open position must exit when its research trade (same `signal_date`) exits at the placeholder open and is
   not a forced end-of-data exit - i.e. the exit rule fired at today's close.
@@ -11,6 +12,8 @@ code that produced the backtest; the placeholder bar carries no information (onl
 Daily loop (`PaperTrader.fill_pending`, then `PaperTrader.plan`; persistent job: forward/daily.py): plan at the
 close of day t -> row orders -> netting -> broker fills at the open of t+1 -> row books -> reconciliation.
 Cash flows as in research: dividends on ex-dates while held (`accrue_dividends`) and the modelled swap on close.
+Intraday rows plan bar by bar with `run_paper(..., days=bar timestamps)`; the placeholder is the next bar of the
+session (next business day's first bar after the session end).
 Quantities: notional per trade = capital / max_positions (capacity rows) or the cache notional (cell rows), times
 the vol weight for `sizing="vol"` rows, rounded down to `lot_step`.
 """
@@ -29,10 +32,21 @@ from sfactory.portfolio.sizing import trailing_vol
 from sfactory.signals.methods import EntrySpec
 
 
-def _next_day(d) -> np.datetime64:
-    if np.asarray(d).dtype != np.dtype("datetime64[D]"):
-        raise NotImplementedError("the parity planner is daily-only for now (intraday: next bar of the session)")
-    return np.busday_offset(d, 1, roll="forward")
+def _next_bar(dates: np.ndarray) -> np.datetime64:
+    """The timestamp of the next bar from the session calendar seen in the history: daily -> next business day;
+    intraday -> last + bar length inside the session, else the next business day's first bar."""
+    last = dates[-1]
+    if dates.dtype == np.dtype("datetime64[D]"):
+        return np.busday_offset(last, 1, roll="forward")
+    step = np.median(np.diff(dates[-200:])) if len(dates) > 1 else np.timedelta64(1, "h")
+    days = dates.astype("datetime64[D]")
+    tod = dates - days
+    last_tod = np.max(tod[-2000:])                    # the session's last bar start
+    first_tod = np.min(tod[-2000:])
+    if tod[-1] + step <= last_tod:
+        return last + step
+    nxt_day = np.busday_offset(days[-1], 1, roll="forward")
+    return (nxt_day + first_tod).astype(dates.dtype)
 
 
 def arrays_upto(arrays: dict[str, SymbolArrays], day: date) -> dict[str, SymbolArrays]:
@@ -48,9 +62,8 @@ def arrays_upto(arrays: dict[str, SymbolArrays], day: date) -> dict[str, SymbolA
 
 
 def extend_one_bar(a: SymbolArrays) -> SymbolArrays:
-    last = a.dates[-1]
     c, f = a.ex_close[-1], a.factor[-1]
-    return SymbolArrays(a.symbol, np.r_[a.dates, _next_day(last)], np.r_[a.sig_close, a.sig_close[-1]],
+    return SymbolArrays(a.symbol, np.r_[a.dates, _next_bar(a.dates)], np.r_[a.sig_close, a.sig_close[-1]],
                         np.r_[a.sig_high, a.sig_close[-1]], np.r_[a.ex_open, c], np.r_[a.ex_close, c],
                         np.r_[a.div, 0.0], np.r_[a.sig_low, a.sig_close[-1]], np.r_[a.factor, f])
 
