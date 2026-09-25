@@ -5,7 +5,7 @@
 - Design: v2.1 Persian Word doc (owner); specs in docs/spec/
 - Accepted ADRs: 0001 uv + Polars; 0002 custom NumPy/Numba engine, vectorbt only as cross-check; 0003 Parquet + DuckDB
 - Accepted: 0004 parallelism (algorithmic slicing fix + stdlib process pool for the trade cache)
-- Full-repository check (2026-09-25): every file downloaded from main into a clean folder; ruff (src, tests, scripts) clean; pytest 193 passed + 1 skipped (vectorbt cross-check) before the additions below; last full run on the clean copy: 229 tests, 228 passed + 1 skipped
+- Full-repository check (2026-09-25): every file downloaded from main into a clean folder; ruff (src, tests, scripts) clean; pytest 193 passed + 1 skipped (vectorbt cross-check) before the additions below; last full run on the clean copy: 243 tests, 242 passed + 1 skipped (after the FX / index / metals path)
 
 ## Done (skeleton)
 - data: contracts, CRSP-style dividend adjustment, synthetic market generator, point-in-time eligibility
@@ -13,7 +13,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 229 (228 run without the `crosscheck` group; web API and scheduler service tests need the `web` group) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 243 (242 run without the `crosscheck` group; web API and scheduler service tests need the `web` group) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -53,6 +53,7 @@
 - scheduler service (option C, stdlib + tzdata): New York market-time triggers (daily, after every bar), preset chains that stop at the first failure, missed / late / still-running rules, heartbeat, `python -m sfactory.scheduler`; Schedules in the admin, scheduler panel on the Jobs page (docs/spec/scheduling.md)
 - kill switch: halt_new / flatten read by every job before every plan, automatic limits (drawdown, daily loss, reconciliation mismatches), event log (jobs, scheduler, dashboard), banner + control panel in the dashboard (docs/spec/killswitch.md)
 - Telegram notifications for the events (`forward/notify.py`): the scheduler sends every new event once to one chat (level filter, HTTP proxy, retry from the same place after an outage, flood cap, token only in `SF_TELEGRAM_TOKEN`), settings and "Send test message" on the Platform page; tested against a local fake Telegram server (docs/spec/killswitch.md)
+- FX / index / metals path for Moneta MT5: symbol specification export from the terminal (`scripts/export_mt5_specs.py`, enum names from the package, spread from the broker's bars) + hand-written sessions file (docs/spec/mt5_specs.md); cost CSV from the export + manual commission / slippage, USD only, nothing defaulted (`scripts/convert_mt5_costs.py`, docs/spec/mt5_costs.md); `--asset-class fx|index_cfd|metal` in run_real / run_daily / run_intraday: Dukascopy 1H snapshots (raw), 24x5 calendar on the 17:00 New York broker day, strict cost table, CFD catalogue `2026-10-cfd-v1` with FX / IX rows (S7 top-N) and pooled MT rows (docs/spec/cfd_markets.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -79,8 +80,9 @@
 13. ~~Scheduling~~ (done: option C)
 14. ~~Kill switch + event log~~ (done)
 15. ~~A notification channel for the events~~ (done: Telegram, owner's choice)
-16. Next: Moneta FX / index / metals path (MT5 symbol specification export, cost model from it, `--asset-class`, 24x5 calendar with the 17:00 New York rollover, FX / IX / MT catalogue version); a job type for the v1 data refresh (needs its command)
-17. Optional: CPCV and HRP; ML meta-labeling rows; market impact model; gap rows and announcement-date events; mark-to-market kill-switch limits
+16. ~~Moneta FX / index / metals path~~ (done: spec export, costs, `--asset-class`, 24x5 calendar, CFD catalogue)
+17. Next: a job type for the v1 data refresh (needs its command); job presets for the export / cost scripts; currency translation of non-USD index CFDs
+18. Optional: CPCV and HRP; ML meta-labeling rows; market impact model; gap rows and announcement-date events; mark-to-market kill-switch limits
 
 ## Next on the owner's machine
 1. Survivorship check first: `scripts/check_survivorship.py --store <store> [--membership ...]` (docs/spec/survivorship.md)
@@ -98,4 +100,5 @@
 13. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
 14. Costs: `scripts/convert_moneta_costs.py` (see docs/spec/costs_v1.md), then `run_real.py --costs costs_moneta.csv`
 15. Paper trading: `scripts/run_daily.py --init ...` with the holdout policy, then one run per trading day (docs/spec/daily.md)
-16. Dashboard: `uv sync --group web`, `cd web && npm install && npm run build`, `uv run python -m sfactory.web --config <dir>` (add `SF_WEB_TOKEN` + `--host 0.0.0.0` for network access); commit web/package-lock.json
+16. FX / index / metals: `scripts/export_mt5_specs.py` on the Moneta terminal (check what MT5 stores in the bar `spread` field), write `manual_costs.csv` (commission per lot per side, slippage) and `sessions.csv`, run `scripts/convert_mt5_costs.py --spread-stat ...`, then `run_real.py --asset-class fx --symbol-top-n <n> --costs costs_fx.csv` (docs/spec/cfd_markets.md)
+17. Dashboard: `uv sync --group web`, `cd web && npm install && npm run build`, `uv run python -m sfactory.web --config <dir>` (add `SF_WEB_TOKEN` + `--host 0.0.0.0` for network access); commit web/package-lock.json
