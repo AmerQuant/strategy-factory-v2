@@ -3,8 +3,8 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { PageHead } from "@/components/Layout";
-import { Button, Dialog, Empty, Panel, Select, Table } from "@/components/ui";
-import { type Job, useApi, useSave } from "@/lib/api";
+import { Button, Dialog, Empty, Panel, Select, Table, Tag } from "@/components/ui";
+import { type Job, type SchedulerSummary, useApi, useSave } from "@/lib/api";
 import { when } from "@/lib/utils";
 import { JobStatus } from "./Overview";
 
@@ -28,7 +28,8 @@ export function Jobs() {
           </Select>
           <Button variant="primary" disabled={!preset || launch.isPending} onClick={start}><Play className="size-4" />Start job</Button>
         </div>} />
-      <Panel flush>
+      <SchedulerPanel onOpen={setOpen} />
+      <Panel flush title="Job runs">
         {jobs.data?.length ? (
           <Table head={["Job", "Preset", "Kind", "Started", "Finished", "Status", ""]}>
             {jobs.data.map((j) => (
@@ -44,6 +45,43 @@ export function Jobs() {
       </Panel>
       <JobDialog id={open} onClose={() => setOpen(null)} />
     </>
+  );
+}
+
+function RunStatus({ status }: { status: string }) {
+  const tone = status === "succeeded" ? "pos" : status === "failed" || status === "missed" ? "neg"
+    : status === "running" ? "accent" : status === "skipped" ? "warn" : "neutral";
+  return <Tag tone={tone}>{status}</Tag>;
+}
+
+function SchedulerPanel({ onOpen }: { onOpen: (id: string) => void }) {
+  const q = useApi<SchedulerSummary>("/scheduler", { refetchInterval: 10000 });
+  const d = q.data;
+  if (!d) return null;
+  const head = d.alive
+    ? <Tag tone="pos">service running</Tag>
+    : <Tag tone="neg">{d.heartbeat ? "service not running" : "service never started"}</Tag>;
+  return (
+    <Panel flush className="mb-5" title={<span className="flex items-center gap-2">Scheduler {head}</span>}
+      action={<span className="text-xs text-muted">{d.heartbeat ? `last tick ${when(d.heartbeat.at)}` : "python -m sfactory.scheduler --config <dir>"}</span>}>
+      {d.schedules.length ? (
+        <Table head={["Schedule", "Steps", "Next run", "Last run", ""]}>
+          {d.schedules.map((s) => (
+            <tr key={s.id}>
+              <td className="font-medium">{s.name}{!s.enabled && <span className="ml-2"><Tag>paused</Tag></span>}
+                {s.error && <div className="text-xs text-neg">{s.error}</div>}</td>
+              <td className="text-xs">{s.steps.join(" \u2192 ")}</td>
+              <td className="text-muted">{s.next ? when(s.next) : "\u2013"}</td>
+              <td>{s.last ? <span className="flex items-center gap-2"><RunStatus status={s.last.status} />
+                <span className="text-xs text-muted">{when(s.last.started_at)}</span></span> : <span className="text-muted">never</span>}
+                {s.last?.note && <div className="text-xs text-muted">{s.last.note}</div>}</td>
+              <td className="text-right">{s.last?.steps.map((st) => (
+                <Button key={st.job} size="sm" variant="ghost" onClick={() => onOpen(st.job)} title={st.preset}>{st.preset}</Button>))}</td>
+            </tr>
+          ))}
+        </Table>
+      ) : <Empty title="No schedules">Create one in Admin, Schedules; the scheduler service runs it.</Empty>}
+    </Panel>
   );
 }
 
