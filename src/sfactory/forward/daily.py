@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,7 +32,7 @@ import polars as pl
 from sfactory.broker.orders import Order, RowBook, VirtualPosition
 from sfactory.engine.cache import SymbolArrays, TradeCache
 from sfactory.forward.live import BookEntry, book_diff, decide_book, live_fold
-from sfactory.forward.paper import PaperTrader, _exit_spec, arrays_upto
+from sfactory.forward.paper import PaperTrader, _exit_spec, _next_bar, arrays_upto
 from sfactory.policy.edge_state import ActivationConfig, calibrate_trendiness, decide_sub
 from sfactory.policy.ladder import LadderConfig
 from sfactory.portfolio.sizing import drawdown_brake, vol_target_daily
@@ -116,7 +116,21 @@ def policy_entries(policy: list) -> list[tuple]:
 
 
 def _d(s):
-    return None if s is None else date.fromisoformat(str(s)[:10])
+    """Parse a stored day or bar timestamp: dates stay dates, intraday timestamps stay datetimes."""
+    if s is None:
+        return None
+    s = str(s)
+    return datetime.fromisoformat(s) if len(s) > 10 else date.fromisoformat(s)
+
+
+def _day(t) -> date:
+    """The calendar day of a day or a bar timestamp (decision points are calendar days)."""
+    return t.date() if isinstance(t, datetime) else t
+
+
+def _at(t) -> datetime:
+    """Comparable instant of a day (its start) or a bar timestamp."""
+    return t if isinstance(t, datetime) else datetime(t.year, t.month, t.day)  # noqa: DTZ001 - naive by convention
 
 
 def _book_to_json(book: dict) -> dict:
@@ -231,6 +245,7 @@ def _fm(state: DailyState) -> FoldManager:
 
 def due_dp(state: DailyState, today: date) -> date | None:
     """The decision point to apply at `today`'s close, if one has come (first DP, then every dp_months)."""
+    today = _day(today)
     step = int(state.fold["dp_months"])
     nxt = (date.fromisoformat(state.fold["first_dp"]) if state.last_dp is None
            else add_months(date.fromisoformat(state.last_dp), step))
@@ -246,6 +261,7 @@ def due_sub(state: DailyState, today: date, sub_months: int = 1) -> date | None:
     and was not applied yet (the DP itself is the first sub-DP of its fold)."""
     if state.last_dp is None:
         return None
+    today = _day(today)
     dp = date.fromisoformat(state.last_dp)
     last = date.fromisoformat(state.last_sub_dp) if state.last_sub_dp else None
     cands = [add_months(dp, k * sub_months) if k else dp for k in range(int(state.fold["dp_months"]) // sub_months)]
@@ -290,7 +306,7 @@ def _overlays(state: DailyState, today: date) -> dict:
         if ov is None:
             continue
         closed = state.books[cfg.rid].closed if cfg.rid in state.books else []
-        out[cfg.rid] = overlay_scale(row_daily_pnl(closed, start, today), ov, cfg.capital)
+        out[cfg.rid] = overlay_scale(row_daily_pnl(closed, start, _day(today)), ov, cfg.capital)
     state.row_scale = {r: v["scale"] for r, v in out.items()}
     return out
 
@@ -301,7 +317,7 @@ def open_phase(state: DailyState, arrays: dict[str, SymbolArrays], today: date, 
     live MT5: run at the open, the adapter fills at market (today's bar need not exist yet). Dividends of today
     are accrued here when today's bars are known, otherwise in the close phase (positions closed at today's
     open then miss that dividend in the books; the broker's cash is the reference in live)."""
-    if state.filled_day is not None and date.fromisoformat(state.filled_day) >= today:
+    if state.filled_day is not None and _at(_d(state.filled_day)) >= _at(today):
         raise ValueError(f"open of {today} already executed")
     pt = PaperTrader(broker, books=state.books, pending=list(state.pending), cost_model=cost_model,
                      div_day=_d(state.div_day))
@@ -320,7 +336,7 @@ def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: p
                 membership: pl.DataFrame | None, today: date, cost_model=None, regime=None,
                 data_version: str = "live", lot_step: float = 1e-9) -> dict:
     """After today's close: refresh the book at a DP, then plan the next open."""
-    if state.last_day is not None and date.fromisoformat(state.last_day) >= today:
+    if state.last_day is not None and _at(_d(state.last_day)) >= _at(today):
         raise ValueError(f"close of {today} already processed (last {state.last_day})")
     if state.pending:
         raise ValueError("pending orders were not executed: run the open phase first")
@@ -356,6 +372,24 @@ def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: p
     report.update({"orders": len(plan.orders), "warnings": plan.warnings,
                    "open_positions": sum(len(b.positions) for b in state.books.values())})
     return report
+
+
+def bar_step(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: pl.DataFrame,
+             membership: pl.DataFrame | None, bar, broker, live: bool = False, cost_model=None, regime=None,
+             data_version: str = "live", lot_step: float = 1e-9) -> dict:
+    """One intraday bar (or one day). Paper (`live=False`): fill the pending orders at this bar's open, then plan
+    at its close - the research timing. Live: the job runs right after `bar` closed; plan at its close, then
+    execute at once at market (the next bar's open, which does not exist in the data yet)."""
+    if not live:
+        return daily_step(state, arrays, bars_hist, membership, bar, broker, cost_model, regime, data_version,
+                          lot_step)
+    rep = close_phase(state, arrays, bars_hist, membership, bar, cost_model, regime, data_version, lot_step)
+    a = next(iter(arrays.values()), None)
+    nxt = _next_bar(a.dates[a.dates <= np.datetime64(bar)]).astype(object) if a is not None else bar
+    rec = open_phase(state, arrays_upto(arrays, bar), nxt, broker, cost_model)
+    rep.update({"reconciled": rec["reconciled"], "diffs": rec["diffs"], "executed_at": str(nxt)})
+    state.log.append({k: rep[k] for k in ("day", "reconciled", "orders", "open_positions")})
+    return rep
 
 
 def daily_step(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: pl.DataFrame,
