@@ -101,6 +101,7 @@ class DailyState:
     act_state: dict = field(default_factory=dict)      # fast clock: row -> previous weights (hysteresis)
     trend_cal: dict = field(default_factory=dict)      # fast clock: row -> in-fold trendiness calibration
     last_sub_dp: str | None = None
+    div_day: str | None = None                         # last day whose dividends were accrued in the books
 
     def to_json(self) -> dict:
         ow = _book_to_json({f"{r}|{s}": b for (r, s), b in self.opened_with.items()})
@@ -113,7 +114,7 @@ class DailyState:
                 "pending": [{**asdict(o), "signal_date": str(o.signal_date)} for o in self.pending],
                 "log": self.log, "last_day": self.last_day, "sim_net": self.sim_net,
                 "filled_day": self.filled_day, "weights": self.weights, "act_state": self.act_state,
-                "trend_cal": self.trend_cal, "last_sub_dp": self.last_sub_dp}
+                "trend_cal": self.trend_cal, "last_sub_dp": self.last_sub_dp, "div_day": self.div_day}
 
     @classmethod
     def from_json(cls, d: dict) -> DailyState:
@@ -134,7 +135,7 @@ class DailyState:
         return cls(d["policy"], d["fold"], d["last_dp"], _book_from_json(d["book"]), ow, books,
                    [Order(**{**o, "signal_date": _d(o["signal_date"])}) for o in d["pending"]],
                    d["log"], d["last_day"], d.get("sim_net", {}), d.get("filled_day"), d.get("weights", {}),
-                   d.get("act_state", {}), d.get("trend_cal", {}), d.get("last_sub_dp"))
+                   d.get("act_state", {}), d.get("trend_cal", {}), d.get("last_sub_dp"), d.get("div_day"))
 
     def save(self, path: str | Path) -> None:
         p = Path(path)
@@ -229,13 +230,17 @@ def _fast_clock(state: DailyState, known: TradeCache, today: date, new_dp: bool)
 
 
 # --- the day ----------------------------------------------------------------------------------------------
-def open_phase(state: DailyState, arrays: dict[str, SymbolArrays], today: date, broker) -> dict:
+def open_phase(state: DailyState, arrays: dict[str, SymbolArrays], today: date, broker, cost_model=None) -> dict:
     """Execute the orders planned at the previous close. Paper: at today's bar open (arrays through today);
-    live MT5: run at the open, the adapter fills at market (today's bar need not exist yet)."""
+    live MT5: run at the open, the adapter fills at market (today's bar need not exist yet). Dividends of today
+    are accrued here when today's bars are known, otherwise in the close phase (positions closed at today's
+    open then miss that dividend in the books; the broker's cash is the reference in live)."""
     if state.filled_day is not None and date.fromisoformat(state.filled_day) >= today:
         raise ValueError(f"open of {today} already executed")
-    pt = PaperTrader(broker, books=state.books, pending=list(state.pending))
+    pt = PaperTrader(broker, books=state.books, pending=list(state.pending), cost_model=cost_model,
+                     div_day=_d(state.div_day))
     rec = pt.fill_pending(arrays, today)
+    state.div_day = str(pt.div_day) if pt.div_day else state.div_day
     for (r, s) in list(state.opened_with):          # positions closed today no longer need their setting
         if s not in pt.books.get(r, RowBook(r)).positions:
             del state.opened_with[(r, s)]
@@ -270,7 +275,9 @@ def close_phase(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: p
     fc = _fast_clock(state, known, today, dp is not None)
     if fc is not None:
         report["fast_clock"] = fc
-    pt = PaperTrader(None, books=state.books)
+    pt = PaperTrader(None, books=state.books, div_day=_d(state.div_day))
+    pt.accrue_dividends(arrays, today)             # live: the open ran before today's bar existed
+    state.div_day = str(pt.div_day) if pt.div_day else state.div_day
     plan = pt.plan(known, state.book, today, lot_step=lot_step, opened_with=state.opened_with,
                    weights=state.weights)
     for o in plan.orders:
@@ -286,7 +293,7 @@ def daily_step(state: DailyState, arrays: dict[str, SymbolArrays], bars_hist: pl
                membership: pl.DataFrame | None, today: date, broker, cost_model=None, regime=None,
                data_version: str = "live", lot_step: float = 1e-9) -> dict:
     """Paper mode in one call: fill yesterday's plan at today's open, then plan at today's close."""
-    rec = open_phase(state, arrays, today, broker)
+    rec = open_phase(state, arrays, today, broker, cost_model)
     rep = close_phase(state, arrays, bars_hist, membership, today, cost_model, regime, data_version, lot_step)
     rep.update({"reconciled": rec["reconciled"], "diffs": rec["diffs"]})
     state.log.append({k: rep[k] for k in ("day", "reconciled", "orders", "open_positions")})
