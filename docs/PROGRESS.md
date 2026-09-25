@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 170 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 175 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -38,6 +38,7 @@
 - package 5 (speed, ADR-0004): stacked per-setting time slicing and memoised universe (about 3-5x on 200 symbols, single process), parallel trade-cache precompute with a spawn process pool, run_real --workers, scripts/bench_speed.py
 - package 6 (broker bridge): order/fill contract, netting across rows with internal crossing, row books, reconciliation, simulated broker, research-parity paper planner (placeholder-bar method, exact trade parity tested), MT5 adapter for netting and hedging accounts with dry run (docs/spec/broker.md)
 - roadmap 7 (v1 cost profiles -> v2): v1-faithful profile resolution, unit conversion (spread / commission / slippage / swap), nothing silently defaulted, broker symbol map for MT5 (docs/spec/costs_v1.md)
+- daily paper / live job: persistent JSON state, open / close phases (MT5 at the open, plan after the close), DP book refresh, positions keep the setting they were opened with, `scripts/run_daily.py` (docs/spec/daily.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -47,6 +48,15 @@
 5. ~~Parallelism and speed~~ (done; measure with scripts/bench_speed.py on the owner's machine)
 6. ~~MT5 bridge~~ (done as far as possible without a terminal; daily paper job script, MT5 deal costs, paper dividends open)
 7. ~~Moneta cost converter v1 → v2 CSV~~ (done; run it on the owner's machine)
+
+## Remaining code (no owner machine; in this order)
+1. ~~Daily paper / live job with state file~~ (done)
+2. run_edge_state and run_sizing per accepted row inside run_real + evidence / report
+3. Fast clock (edge on/off) in the live book
+4. Cross-row risk budget in the combined policy
+5. Paper dividends; MT5 commission / swap from deal history
+6. Precompute for the robustness caches
+7. Intraday: session exits, DST-aware clock, intraday planner
 
 ## Next on the owner's machine
 1. First real run: `scripts/run_real.py` on the v1 store (bars ready); then membership + dividends files when located (or `fetch_alpaca_dividends.py`)
@@ -59,3 +69,4 @@
 8. `run_sizing` per accepted row on real data: vol sizing is kept only if it passes the Sharpe gate
 9. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
 10. Costs: `scripts/convert_moneta_costs.py` (see docs/spec/costs_v1.md), then `run_real.py --costs costs_moneta.csv`
+11. Paper trading: `scripts/run_daily.py --init ...` with the holdout policy, then one run per trading day (docs/spec/daily.md)
