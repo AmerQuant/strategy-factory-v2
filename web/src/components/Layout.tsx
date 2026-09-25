@@ -1,8 +1,9 @@
-import { Activity, BookOpen, Boxes, Briefcase, Cable, Coins, FlaskConical, Gauge, Layers, Map, Menu, Moon,
+import { useQueryClient } from "@tanstack/react-query";
+import { Activity, BookOpen, Boxes, Briefcase, Cable, Coins, FlaskConical, Gauge, Layers, LogOut, Map, Menu, Moon,
   PlayCircle, Radio, Settings, ShieldHalf, Sun } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { useApi } from "@/lib/api";
+import { api, type Health, useApi } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -29,7 +30,9 @@ const NAV: { group: string; items: { to: string; label: string; icon: ReactNode 
 export function Layout() {
   const [open, setOpen] = useState(false);
   const { theme, toggle } = useTheme();
-  const health = useApi<{ ok: boolean }>("/health", { refetchInterval: 15000 });
+  const health = useApi<Health>("/health", { refetchInterval: 15000 });
+  const qc = useQueryClient();
+  const signOut = async () => { await api.post("/logout"); await qc.invalidateQueries(); };
   return (
     <div className="flex h-full">
       <aside className={cn("fixed inset-y-0 left-0 z-30 w-60 shrink-0 border-r border-line bg-surface transition-transform md:static md:translate-x-0",
@@ -71,6 +74,10 @@ export function Layout() {
           <button onClick={toggle} className="rounded-md p-2 hover:bg-sunken" aria-label="Toggle light and dark mode">
             {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </button>
+          {health.data?.auth_required && (
+            <button onClick={signOut} className="rounded-md p-2 hover:bg-sunken" aria-label="Sign out" title="Sign out">
+              <LogOut className="size-4" />
+            </button>)}
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[1400px] p-4 md:p-6"><Outlet /></div>
