@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from sfactory.forward import alerts, killswitch
+from sfactory.forward import alerts, killswitch, notify
 from sfactory.web import readers
 from sfactory.web.config_store import ConfigStore
 from sfactory.web.jobs import JobManager
@@ -280,6 +280,22 @@ def create_app(config_dir: str | Path, static_dir: str | Path | None = None, tok
         k.limits = lim
         killswitch.save(kfile, k)
         return k.to_json()
+
+    @app.get("/api/notify")
+    def notify_status():
+        s = store.settings()
+        return {**notify.status(store.root), "chat_set": bool(s.telegram_chat_id), "min_level": s.telegram_min_level}
+
+    @app.post("/api/notify/test")
+    def notify_test():
+        n = notify.from_settings(store.root, store.settings())
+        if n is None:
+            raise HTTPException(422, "set the Telegram chat id in Platform and SF_TELEGRAM_TOKEN where the server runs")
+        try:
+            n.channel.send("\u2705 Strategy Factory: test message from the dashboard")
+        except Exception as e:                          # any network / API error goes back to the user
+            raise HTTPException(502, f"Telegram not reachable: {e}") from e
+        return {"sent": True}
 
     @app.get("/api/events")
     def events(limit: int = 200):
