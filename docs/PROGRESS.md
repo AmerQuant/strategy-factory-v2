@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 181 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 183 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -42,6 +42,7 @@
 - run_real --analyze-accepted: edge on/off + sizing ablations per accepted row in the evidence (evaluation/row_analysis.py)
 - fast clock in the live book: policy entries with an accepted activation, sub-DP weights from the research decide_sub (live == research tested)
 - cross-row risk budget in the combined policy: joint row / family caps (water filling) + ex-ante portfolio vol target, used in the path-2 test too; run_real --max-row-weight / --max-family-weight / --target-vol (docs/spec/risk_budget.md)
+- paper cash flows: dividends on ex-dates and modelled swap in the row books (research parity per share tested); MT5 real commission / fee from the deal history, deal_costs and open_swap reports
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -57,7 +58,7 @@
 2. ~~run_edge_state and run_sizing per accepted row inside run_real + evidence~~ (done; shown in the web dashboard)
 3. ~~Fast clock (edge on/off) in the live book~~ (done)
 4. ~~Cross-row risk budget in the combined policy~~ (done)
-5. Paper dividends; MT5 commission / swap from deal history
+5. ~~Paper dividends; MT5 commission / swap from deal history~~ (done)
 6. Precompute for the robustness caches
 7. Intraday: session exits, DST-aware clock, intraday planner
 8. Web admin + dashboard (approved stack: FastAPI + React/TypeScript + Vite + Tailwind + shadcn/ui + ECharts; English UI, light/dark)
