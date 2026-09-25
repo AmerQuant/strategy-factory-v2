@@ -10,6 +10,7 @@ code that produced the backtest; the placeholder bar carries no information (onl
 
 Daily loop (`PaperTrader.fill_pending`, then `PaperTrader.plan`; persistent job: forward/daily.py): plan at the
 close of day t -> row orders -> netting -> broker fills at the open of t+1 -> row books -> reconciliation.
+Cash flows as in research: dividends on ex-dates while held (`accrue_dividends`) and the modelled swap on close.
 Quantities: notional per trade = capital / max_positions (capacity rows) or the cache notional (cell rows), times
 the vol weight for `sizing="vol"` rows, rounded down to `lot_step`.
 """
@@ -159,9 +160,33 @@ class PaperTrader:
     books: dict = field(default_factory=dict)
     pending: list = field(default_factory=list)
     log: list = field(default_factory=list)
+    cost_model: object = None        # for the modelled swap on closed positions (research financing)
+    div_day: date | None = None      # last day whose dividends were accrued (idempotence across phases)
+
+    def accrue_dividends(self, arrays: dict[str, SymbolArrays], day: date) -> float:
+        """Dividends with ex-date `day` (first bar of the day in the arrays) for positions held at the prior close.
+        Called before the day's fills, so a position closed at today's open still receives it."""
+        if self.div_day == day:
+            return 0.0
+        d = np.datetime64(day)
+        amounts, seen = {}, False
+        for b in self.books.values():
+            for sym in b.positions:
+                a = arrays.get(sym)
+                if a is None or sym in amounts:
+                    continue
+                i = int(np.searchsorted(a.dates, d))
+                if i < len(a.dates) and a.dates[i] == d:
+                    seen = True
+                    if a.div[i] > 0:
+                        amounts[sym] = float(a.div[i])
+        if seen:                             # today's bars known: this day is done
+            self.div_day = day
+        return sum(b.accrue_dividends(amounts, day) for b in self.books.values()) if amounts else 0.0
 
     def fill_pending(self, arrays: dict[str, SymbolArrays], day: date) -> dict:
-        """Execute yesterday's plan at `day`'s open."""
+        """Execute yesterday's plan at `day`'s open (dividends of `day` are accrued first)."""
+        self.accrue_dividends(arrays, day)
         if not self.pending:
             return reconcile(self.books.values(), self.broker.positions())
         orders, self.pending = self.pending, []
@@ -174,7 +199,13 @@ class PaperTrader:
         nets = net_orders(orders)
         fills = self.broker.execute(nets, opens, day)
         for rf in allocate(nets, fills, orders, opens, day):
-            self.books.setdefault(rf.order.row, RowBook(rf.order.row)).apply(rf)
+            book = self.books.setdefault(rf.order.row, RowBook(rf.order.row))
+            rate, dc = 0.0, 360
+            if rf.order.intent == "close" and self.cost_model is not None:
+                pos = book.positions[rf.order.symbol]
+                rate = self.cost_model.swap_pct(rf.order.symbol, 1 if pos.qty > 0 else -1)
+                dc = self.cost_model.day_count
+            book.apply(rf, rate, dc)
         rec = reconcile(self.books.values(), self.broker.positions())
         self.log.append({"day": str(day), "orders": len(orders), "net_orders": sum(abs(n.qty) > 0 for n in nets),
                          "reconciled": rec["ok"]})
@@ -195,7 +226,7 @@ def run_paper(arrays: dict[str, SymbolArrays], book: dict, days: list[date], bro
               cost_model=None, notional: float = 100_000.0, regime=None, lot_step: float = 1e-9) -> PaperTrader:
     """Replay `days` as if live: for each day fill yesterday's orders at the open, then plan at the close.
     Used for paper mode on historical data and for the research-parity test."""
-    pt = PaperTrader(broker)
+    pt = PaperTrader(broker, cost_model=cost_model)
     for day in days:
         pt.fill_pending(arrays, day)
         known = TradeCache(arrays_upto(arrays, day), f"{data_version}|{day}", notional, cost_model=cost_model)
