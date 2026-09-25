@@ -111,3 +111,6 @@ export interface SchedulerSummary {
     last: ScheduleRun | null }[];
   runs: ScheduleRun[];
 }
+export interface Limits { capital: number; max_drawdown: number | null; max_daily_loss: number | null; max_recon_failures: number | null }
+export interface KillSwitch { active: boolean; mode: "halt_new" | "flatten"; reason: string; at: string | null; by: string; limits: Limits }
+export interface PlatformEvent { at: string; level: "critical" | "warning" | "info"; source: string; message: string }

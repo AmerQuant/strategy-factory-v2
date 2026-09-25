@@ -2,8 +2,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Activity, BookOpen, Boxes, Briefcase, Cable, CalendarClock, Coins, FlaskConical, Gauge, Layers, LogOut, Map, Menu, Moon,
   PlayCircle, Radio, Settings, ShieldHalf, Sun } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { NavLink, Outlet } from "react-router-dom";
-import { api, type Health, useApi } from "@/lib/api";
+import { Link, NavLink, Outlet } from "react-router-dom";
+import { api, type Health, type KillSwitch, useApi } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -32,6 +32,7 @@ export function Layout() {
   const [open, setOpen] = useState(false);
   const { theme, toggle } = useTheme();
   const health = useApi<Health>("/health", { refetchInterval: 15000 });
+  const kill = useApi<KillSwitch>("/killswitch", { refetchInterval: 15000 });
   const qc = useQueryClient();
   const signOut = async () => { await api.post("/logout"); await qc.invalidateQueries(); };
   return (
@@ -80,6 +81,12 @@ export function Layout() {
               <LogOut className="size-4" />
             </button>)}
         </header>
+        {kill.data?.active && (
+          <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-neg px-4 py-2 text-sm text-white">
+            <strong>{kill.data.mode === "flatten" ? "Kill switch: closing all positions" : "Kill switch: no new entries"}</strong>
+            <span className="opacity-90">{kill.data.reason}</span>
+            <Link to="/live" className="ml-auto underline">Open</Link>
+          </div>)}
         <main className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[1400px] p-4 md:p-6"><Outlet /></div>
         </main>
