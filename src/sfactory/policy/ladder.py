@@ -11,7 +11,8 @@ Per decision point, using IS trades only:
   A4  at most one optional filter; accepted only if it improves the IS t-stat, keeps >= filter_min_keep of the
       trades, improves expectancy in most IS years, and beats random removal of the same number of trades
 Structural filters (design ch. 12) are fixed, always applied and never selected in-fold.
-Capacity/ranking (S8) is applied to the stitched OOS stream when max_positions > 0.
+Capacity/ranking (S8) is applied to the stitched OOS stream when max_positions > 0; trade-level sizing
+(vol targeting, gross exposure cap - portfolio/sizing.py) after it, when the row asks for it.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from sfactory.engine.cache import TradeCache
 from sfactory.metrics.core import equity_stats, trade_stats
 from sfactory.policy.rsi_row import select_threshold
 from sfactory.portfolio.capacity import simulate_capacity
+from sfactory.portfolio.sizing import apply_row_sizing
 from sfactory.registry.repo import Registry
 from sfactory.signals.methods import DEFAULT, FAMILY, GRID, EntrySpec
 from sfactory.signals.specs import MR_FILTER_LIBRARY, ExitSpec, FilterSpec, exit_library_for, neutral_exit_for
@@ -68,6 +70,13 @@ class LadderConfig:
     asset_class: str = "equities"
     universe_mode: str = "membership"  # membership | top_liquidity (no index file available)
     universe_top_n: int = 500
+    # sizing (package 4): fixed = equal notional per trade; vol = per-trade weight target_vol / trailing vol
+    sizing: str = "fixed"
+    target_vol: float = 0.015          # per-bar volatility a position is scaled to
+    vol_window: int = 20
+    vol_fast: int = 5                  # sigma = max(vol over vol_window, vol over vol_fast); 0 = slow only
+    w_max: float = 3.0
+    max_gross: float = 0.0             # > 0: gross open notional <= max_gross x capital
 
     @property
     def level(self) -> int:
@@ -98,7 +107,8 @@ class LadderConfig:
         side = "BUY" if self.direction == 1 else "SELL"
         suffix = {"equities": "EQ", "fx": "FX", "indices": "IX", "metals": "MT"}.get(self.asset_class, "X")
         sel = f"-TOP{self.symbol_select}" if self.symbol_select else ""
-        return self.row_id or f"{self.family}-{self.method.upper()}-{side}-{suffix}{sel}"
+        sz = ("-VOL" if self.sizing == "vol" else "") + (f"-CAP{self.max_gross:g}" if self.max_gross > 0 else "")
+        return self.row_id or f"{self.family}-{self.method.upper()}-{side}-{suffix}{sel}{sz}"
 
 
 @dataclass
@@ -262,6 +272,7 @@ def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membe
     if cfg.max_positions > 0 and len(stitched):
         stitched = simulate_capacity(stitched, cfg.max_positions, cfg.max_new_per_day, cfg.capital,
                                      cache.notional, cfg.ranker)
+    stitched = apply_row_sizing(stitched, cache, cfg)
     res.oos_trades = stitched
     res.stats = {**trade_stats(stitched), **equity_stats(stitched)}
     if registry is not None:
