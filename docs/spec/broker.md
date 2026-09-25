@@ -1,0 +1,40 @@
+# Broker bridge and paper mode - package 6
+
+Code: `broker/orders.py` (contract, netting, row books), `broker/sim.py` (simulated broker),
+`broker/reconcile.py`, `broker/mt5.py` (MetaTrader 5 adapter), `forward/paper.py` (parity planner, daily loop).
+Tests: `tests/test_paper.py`, `tests/test_mt5_adapter.py`.
+
+## Daily cycle
+1. **Close of day t - plan** (`plan_day`): for every book row, exits for its open virtual positions and entries
+   for eligible symbols, then capacity (`max_positions`, `max_new_per_day`, score ranking) and quantities
+   (capital / max_positions or cache notional, times the vol weight for `sizing="vol"` rows, rounded to the lot step).
+2. **Netting** (`net_orders`): one net order per symbol across rows; opposite row orders cross inside the book.
+3. **Open of t+1 - execute** at the broker (simulated or MT5); **allocate** fills back to row orders (broker price
+   and pro-rata commission for the traded part, open price and no cost for the crossed part).
+4. **Row books** update (virtual positions, closed trades in the research trade format); **reconcile**: the sum of
+   the rows' positions must equal the broker's net positions for our magic number.
+
+## Research parity (the central guarantee)
+The planner does not re-implement any rule. It appends one placeholder bar (next business day, open = close =
+today's close) to the arrays known at today's close and asks the research `TradeCache` for trades:
+- a trade with `signal_date == today` is an entry for the next open;
+- an open position exits when its research trade (same `signal_date`) exits at the placeholder open without the
+  forced end-of-data flag, i.e. its exit rule fired at today's close.
+Tested: replaying 18 months day by day through the simulated broker reproduces the research trades exactly
+(signal, entry and exit dates, fill prices, per-share net pnl) for an MR row with the neutral exit, an MR row
+with an ATR stop and a TF row with a trailing stop; perturbing bars after the planning day never changes the plan.
+
+## MT5 adapter
+Official `MetaTrader5` package (Windows), imported lazily. Positions are ours by `magic` number; in a hedging
+account a reducing order closes our positions by ticket (oldest first) before opening the remainder, so the
+account holds one net position per symbol as the books assume. Volumes are rounded down to `volume_step` and
+skipped below `volume_min`. `dry_run=True` builds requests without sending them. `symbol_map` maps research
+symbols to broker symbols. Tested against a fake terminal only (no Windows / MT5 in the development environment).
+
+## Not yet
+- A persistent daily job (`scripts/run_paper.py`: state file with books, book from the last DP, market-on-open
+  scheduling) and the first live connection test on the owner's machine.
+- Commissions and swap from MT5 deal history (the adapter reports fills at the deal price, commission 0).
+- Dividends on paper positions (the simulated broker does not credit them yet; parity tests use a
+  dividend-free market).
+- Intraday planning (the placeholder bar is the next business day).
