@@ -55,6 +55,9 @@ class JobManager:
         cmd = [self.python, str(script), *build_args(args)]
         log = open(self.root / f"{jid}.log", "w", encoding="utf-8")  # noqa: SIM115 - handed to the child
         env = dict(os.environ)                       # the package importable even from a bare interpreter
+        cfg = self.root.parent                       # kill switch and event log live in the admin config directory
+        env.setdefault("SF_KILL_FILE", str(cfg / "killswitch.json"))
+        env.setdefault("SF_EVENTS_FILE", str(cfg / "events.jsonl"))
         src = self.scripts_dir.parent / "src"
         if src.is_dir():
             env["PYTHONPATH"] = os.pathsep.join(p for p in (str(src), env.get("PYTHONPATH", "")) if p)

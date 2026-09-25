@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from sfactory.forward import alerts
 from sfactory.web.config_store import ConfigStore
 from sfactory.web.jobs import JobManager
 from sfactory.web.schemas import Schedule
@@ -111,6 +112,9 @@ class SchedulerService:
                 break
         run.update(status=status, finished_at=self.clock().isoformat(timespec="seconds"))
         self._save_run(run)
+        if status != "succeeded":
+            alerts.emit(self.config_dir / "events.jsonl", "warning", "scheduler",
+                        f"schedule {sch.name}: {run['note']}", schedule=sch.id, run=run["id"])
 
     # --- the loop -----------------------------------------------------------------------------------------
     def tick(self) -> list[dict]:
@@ -142,6 +146,9 @@ class SchedulerService:
             late = now - due
             if late > timedelta(minutes=sch.grace_minutes) and sch.misfire == "skip":
                 events.append(self._new_run(sch, due, "missed", f"{int(late.total_seconds() // 60)} min late"))
+                alerts.emit(self.config_dir / "events.jsonl", "warning", "scheduler",
+                            f"schedule {sch.name}: run due {due.isoformat(timespec='minutes')} was missed",
+                            schedule=sch.id)
                 continue
             t = self.threads.get(sid)
             if t is not None and t.is_alive():
