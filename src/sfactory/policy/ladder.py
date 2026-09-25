@@ -164,21 +164,33 @@ class _FoldView:
         spec = EntrySpec(c.method, thr, c.direction)
         return [self.cache.trades(s, spec, ex, c.structural + fl, c.entry_delay) for s in self.elig]
 
+    def stacked(self, thr: float, ex: ExitSpec, fl: tuple = ()) -> pl.DataFrame:
+        """All eligible symbols' trades for one setting, stacked once (symbols in eligibility order), so every
+        time slice is one filter instead of one per symbol."""
+        key = ("stack", thr, ex.id, tuple(f.id for f in fl))
+        if key not in self.memo:
+            self.memo[key] = _concat(self.trades(thr, ex, fl))
+        return self.memo[key]
+
     def is_df(self, thr: float, ex: ExitSpec, fl: tuple = ()) -> pl.DataFrame:
         key = (thr, ex.id, tuple(f.id for f in fl))
         if key not in self.memo:
-            self.memo[key] = _concat([self.fm.slice_is(t, self.fold) for t in self.trades(thr, ex, fl)])
+            st = self.stacked(thr, ex, fl)
+            self.memo[key] = self.fm.slice_is(st, self.fold) if len(st) else st
         return self.memo[key]
 
     def oos_df(self, thr: float, ex: ExitSpec, fl: tuple, symbols: list | None = None) -> pl.DataFrame:
-        frames = [self.fm.slice_oos(t, self.fold) for t in self.trades(thr, ex, fl)]
-        if symbols is not None:
-            keep = set(symbols)
-            frames = [f for f, s in zip(frames, self.elig) if s in keep]
-        return _concat(frames)
+        st = self.stacked(thr, ex, fl)
+        if len(st) == 0:
+            return st
+        out = self.fm.slice_oos(st, self.fold)
+        return out.filter(pl.col("symbol").is_in(list(symbols))) if symbols is not None else out
 
     def per_symbol_is(self, thr: float, ex: ExitSpec, fl: tuple) -> dict:
-        return {s: self.fm.slice_is(t, self.fold) for s, t in zip(self.elig, self.trades(thr, ex, fl))}
+        df = self.is_df(thr, ex, fl)
+        parts = df.partition_by("symbol", as_dict=True) if len(df) else {}
+        empty = df.clear() if len(df) else pl.DataFrame()
+        return {s: parts.get((s,), empty) for s in self.elig}
 
 
 def select_symbols(view: _FoldView, cfg: LadderConfig, thr: float, ex: ExitSpec, fl: tuple) -> tuple[list, dict]:
@@ -196,6 +208,17 @@ def select_symbols(view: _FoldView, cfg: LadderConfig, thr: float, ex: ExitSpec,
                     key=lambda s: (-stats[s], s))
         chosen = sorted(ok[: cfg.symbol_select])
     return chosen, {s: (None if np.isnan(t) else round(float(t), 4)) for s, t in stats.items()}
+
+
+def cached_universe(cache, cfg, dp, bars, membership) -> list:
+    """universe_at memoised on the cache: rows sharing universe settings re-use the eligible set of a DP.
+    The key includes the bar frame's identity and shape, so a different (e.g. perturbed) frame never hits."""
+    memo = cache.__dict__.setdefault("_universe_memo", {})
+    key = (str(dp), getattr(cfg, "universe_mode", "membership"), cfg.universe_top_n, cfg.min_price,
+           cfg.min_dollar_vol, cfg.min_history, id(bars), bars.height, id(membership))
+    if key not in memo:
+        memo[key] = universe_at(cfg, dp, bars, membership)
+    return list(memo[key])
 
 
 def decide_fold(view: _FoldView, cfg: LadderConfig) -> tuple[float, ExitSpec, tuple, dict]:
@@ -261,7 +284,7 @@ def run_ladder(fm: FoldManager, cache: TradeCache, bars_dev: pl.DataFrame, membe
     res = LadderResult(cfg)
     oos = []
     for fold in (folds if folds is not None else fm.dev_folds()):
-        elig = universe_at(cfg, fold.dp, bars_dev, membership)
+        elig = cached_universe(cache, cfg, fold.dp, bars_dev, membership)
         view = _FoldView(fm, cache, cfg, fold, elig)
         thr, ex, chosen, d = decide_fold(view, cfg)
         res.decisions.append(d)
