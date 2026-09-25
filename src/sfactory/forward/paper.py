@@ -84,7 +84,7 @@ class DayPlan:
 
 def plan_day(known: TradeCache, book: dict, day: date, books: dict[str, RowBook], exit_only: set = frozenset(),
              lot_step: float = 1.0, opened_with: dict | None = None, weights: dict | None = None,
-             row_scale: dict | None = None) -> DayPlan:
+             row_scale: dict | None = None, flatten: bool = False) -> DayPlan:
     """Row orders for the next open from everything known at `day`'s close.
 
     known: TradeCache over arrays through `day` (with regime / index events as in research).
@@ -95,6 +95,7 @@ def plan_day(known: TradeCache, book: dict, day: date, books: dict[str, RowBook]
     weights: row -> {symbol: weight} from the fast clock (policy.edge_state): 0 = no new entries for the symbol,
     other values scale the quantity; rows or symbols without a weight trade at 1. Exits are never affected.
     row_scale: row -> multiplier for all new entries of the row (daily sizing overlays); 0 = no new entries.
+    flatten: kill switch - close every open position at the next open and open nothing.
     """
     opened_with = opened_with or {}
     weights = weights or {}
@@ -108,6 +109,16 @@ def plan_day(known: TradeCache, book: dict, day: date, books: dict[str, RowBook]
     ext._events_id = known._events_id
     plan = DayPlan(day)
     exiting: dict[str, int] = {}
+    if flatten:
+        for rid, rb in sorted(books.items()):
+            for sym, pos in sorted(rb.positions.items()):
+                a = known.arrays.get(sym)
+                if a is None:
+                    plan.warnings.append(f"{rid}/{sym}: no price known, cannot flatten")
+                    continue
+                plan.orders.append(Order(f"{day}:{rid}:{sym}:x", rid, sym, -pos.qty, "close", pos.signal_date,
+                                         float(a.ex_close[-1])))
+        return plan
     for rid in sorted(set(books) | set(book)):
         rb = books.setdefault(rid, RowBook(rid))
         for sym, pos in sorted(rb.positions.items()):
@@ -232,8 +243,8 @@ class PaperTrader:
 
     def plan(self, known: TradeCache, book: dict, day: date, exit_only: set = frozenset(),
              lot_step: float = 1.0, opened_with: dict | None = None, weights: dict | None = None,
-             row_scale: dict | None = None) -> DayPlan:
-        p = plan_day(known, book, day, self.books, exit_only, lot_step, opened_with, weights, row_scale)
+             row_scale: dict | None = None, flatten: bool = False) -> DayPlan:
+        p = plan_day(known, book, day, self.books, exit_only, lot_step, opened_with, weights, row_scale, flatten)
         self.pending = list(p.orders)
         return p
 
