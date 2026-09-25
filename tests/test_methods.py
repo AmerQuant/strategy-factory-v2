@@ -6,9 +6,9 @@ from conftest import build
 from sfactory.engine.generic import run_cell_generic
 from sfactory.policy.catalog import equity_rows
 from sfactory.policy.ladder import LadderConfig, run_ladder
-from sfactory.signals.methods import DEFAULT, FAMILY, EntrySpec, entry_and_score, reverse_exit
+from sfactory.signals.methods import DEFAULT, FAMILY, NEEDS_CTX, EntrySpec, entry_and_score, reverse_exit
 
-METHODS = sorted(FAMILY)
+METHODS = sorted(m for m in FAMILY if m not in NEEDS_CTX)   # context methods: tests/test_families.py
 
 
 def _series(seed=0, n=600):
