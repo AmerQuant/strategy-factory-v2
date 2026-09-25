@@ -138,3 +138,21 @@ def test_jobs_run_the_platform_scripts(client, tmp_path):
     assert info["status"] == "succeeded" and "--diverse" in info["log"][0] and "--workers" in info["log"][0]
     assert c.get("/api/jobs").json()[0]["id"] == j["id"]
     assert c.post("/api/jobs", json={"kind": "nope"}).status_code == 422
+
+
+def test_jobs_can_import_the_package_from_a_bare_interpreter(client):
+    c, tmp = client
+    root = tmp / "proj"
+    (root / "scripts").mkdir(parents=True)
+    (root / "src" / "mypkg").mkdir(parents=True)
+    (root / "src" / "mypkg" / "__init__.py").write_text("VALUE = 42", encoding="utf-8")
+    (root / "scripts" / "run_real.py").write_text("import mypkg; print('VALUE', mypkg.VALUE)", encoding="utf-8")
+    s = c.get("/api/settings").json()
+    c.put("/api/settings", json={**s, "scripts_dir": str(root / "scripts")})
+    j = c.post("/api/jobs", json={"kind": "run_real", "args": {}}).json()
+    for _ in range(100):
+        info = c.get(f"/api/jobs/{j['id']}").json()
+        if info["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert info["status"] == "succeeded" and info["log"] == ["VALUE 42"]

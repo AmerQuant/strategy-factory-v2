@@ -4,6 +4,7 @@ speed benchmark) as subprocesses from a saved preset. Logs go to `<config_dir>/j
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import uuid
@@ -48,7 +49,11 @@ class JobManager:
         jid = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         cmd = [self.python, str(script), *build_args(args)]
         log = open(self.root / f"{jid}.log", "w", encoding="utf-8")  # noqa: SIM115 - handed to the child
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.scripts_dir.parent))
+        env = dict(os.environ)                       # the package importable even from a bare interpreter
+        src = self.scripts_dir.parent / "src"
+        if src.is_dir():
+            env["PYTHONPATH"] = os.pathsep.join(p for p in (str(src), env.get("PYTHONPATH", "")) if p)
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.scripts_dir.parent), env=env)
         self._procs[jid] = proc
         meta = {"id": jid, "kind": kind, "preset": preset, "cmd": cmd, "pid": proc.pid,
                 "started_at": datetime.now(UTC).isoformat(timespec="seconds"), "status": "running",
