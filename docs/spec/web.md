@@ -12,9 +12,19 @@ uv run python -m sfactory.web --config D:/sf2_admin      # http://127.0.0.1:8765
 ```
 Development: `npm run dev` in `web/` (port 5173) proxies `/api` to the backend on 8765.
 
-The server binds to 127.0.0.1: it is meant for one trusted operator. Put it behind a reverse proxy with
-authentication before exposing it on a network. No secrets are stored; the MT5 password stays in
-`SF_MT5_PASSWORD`.
+## Access
+- Local only (default): `--host 127.0.0.1`, no token needed.
+- On a network: set a token of at least 16 characters and bind to the interface:
+  ```
+  set SF_WEB_TOKEN=<long random string>        (or --token-file D:/sf2_admin/token.txt)
+  uv run python -m sfactory.web --config D:/sf2_admin --host 0.0.0.0
+  ```
+  The server refuses a non-local bind without a token. Every `/api` route except health / login / logout then needs
+  `Authorization: Bearer <token>` (scripts) or the session cookie the sign-in screen sets. The cookie holds an HMAC of
+  the token (never the token), is HttpOnly and SameSite=Strict, lasts 14 days, and is marked Secure behind HTTPS.
+  Beyond a trusted LAN put the server behind an HTTPS reverse proxy.
+- One token = one operator role; there are no per-user accounts. No other secrets are stored (the MT5 password stays
+  in `SF_MT5_PASSWORD`).
 
 ## What it shows (workspace)
 | page | source | content |
@@ -38,6 +48,9 @@ Every document is a JSON file under `<config>/<collection>/<id>.json`, written a
 | Broker accounts | simulated or MT5 (login, server, symbol map, dry run) |
 | Job presets | script (run_real, run_daily, cost converter, speed benchmark) + arguments, with flag suggestions per script |
 
+Jobs run with the repository's `src` on `PYTHONPATH`, so they work even if the configured interpreter is not the
+project's own environment.
+
 ## Extending
 - A new admin document type: a pydantic model in `web/schemas.py` + one entry in `COLLECTIONS`; the frontend gets
   a page from one entry in `SPECS` (`web/src/pages/admin/Collection.tsx`) and a line in the navigation.
@@ -46,7 +59,7 @@ Every document is a JSON file under `<config>/<collection>/<id>.json`, written a
   away, with `c` the current theme palette (family colours included).
 
 ## Not yet
-- Authentication and multiple users (single local operator by design for now).
-- The frontend build is not in CI (needs Node in the workflow: `cd web && npm ci && npm run build`); the
+- Per-user accounts and roles (one shared token for now).
+- The frontend build is not in CI yet: `docs/ci_proposed.yml` adds it (the owner copies it over the workflow); the
   `package-lock.json` is created by the first `npm install` on the owner's machine and should be committed then.
 - Scheduling of presets (the daily job still needs Windows Task Scheduler).
