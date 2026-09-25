@@ -29,7 +29,7 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
 Input.displayName = "Input";
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(({ className, ...p }, ref) => (
-  <select ref={ref} className={cn(FIELD, "h-9 pr-8", className)} {...p} />
+  <select ref={ref} className={cn(FIELD, "h-9 pr-2", className)} {...p} />
 ));
 Select.displayName = "Select";
 
@@ -38,14 +38,17 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
 );
 Textarea.displayName = "Textarea";
 
-export function Field({ label, hint, children, className }: { label: string; hint?: string; children: ReactNode;
-  className?: string }) {
+/** A labelled form control. `group` renders a div (for composite editors with their own buttons): a <label>
+ * would forward every click inside it to its first control. */
+export function Field({ label, hint, children, className, group }: { label: string; hint?: string; children: ReactNode;
+  className?: string; group?: boolean }) {
+  const Tag = group ? "div" : "label";
   return (
-    <label className={cn("grid gap-1.5 text-sm", className)}>
+    <Tag className={cn("grid content-start gap-1.5 text-sm", className)} {...(group ? { role: "group", "aria-label": label } : {})}>
       <span className="font-medium">{label}</span>
       {children}
       {hint && <span className="text-xs text-muted">{hint}</span>}
-    </label>
+    </Tag>
   );
 }
 
