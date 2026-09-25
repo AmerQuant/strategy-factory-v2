@@ -15,14 +15,18 @@ type FieldSpec = { key: string; label: string;
 const KIND_FLAGS: Record<string, string[]> = {
   run_real: ["store", "out", "registry", "timeframe", "resample", "clock-shift", "symbols", "top-n", "membership", "dividends",
     "costs", "methods", "diverse", "rung", "max-positions", "max-new", "no-ensembles", "no-robustness", "open-holdout",
-    "analyze-accepted", "max-row-weight", "max-family-weight", "target-vol", "workers"],
+    "analyze-accepted", "max-row-weight", "max-family-weight", "target-vol", "workers", "asset-class", "symbol-top-n", "sessions"],
   run_daily: ["state", "init", "policy", "first-dp", "dp-months", "is-years", "store", "membership", "dividends", "costs", "broker",
-    "phase", "day", "report-dir", "mt5-login", "mt5-server", "symbol-map", "dry-run"],
+    "phase", "day", "report-dir", "mt5-login", "mt5-server", "symbol-map", "dry-run", "asset-class"],
   run_intraday: ["state", "init", "policy", "first-dp", "dp-months", "is-years", "store", "timeframe", "resample", "clock-shift",
-    "membership", "dividends", "costs", "broker", "until", "skip-last", "report-dir", "mt5-login", "mt5-server", "symbol-map", "dry-run"],
+    "membership", "dividends", "costs", "broker", "until", "skip-last", "report-dir", "mt5-login", "mt5-server", "symbol-map", "dry-run",
+    "asset-class"],
   check_survivorship: ["store", "timeframe", "membership", "out"],
   convert_costs: ["v1-costs", "universe", "store", "prices", "notional", "out", "map-out"],
   bench_speed: ["symbols", "store", "workers", "rows"],
+  export_mt5_specs: ["symbol-map", "symbols", "out", "timeframe", "bars", "mt5-login", "mt5-server", "mt5-path"],
+  convert_mt5_costs: ["specs", "manual", "spread-stat", "out", "map-out"],
+  refresh_v1_data: ["v1-repo", "steps", "runner", "data-root", "timeout"],
 };
 
 interface Spec { title: string; single: string; sub: string; fields: FieldSpec[]; columns: [string, (d: Doc) => ReactNode][];
@@ -102,7 +106,9 @@ const SPECS: Record<string, Spec> = {
     title: "Job presets", single: "job preset", sub: "Saved command lines for the platform scripts. Start them from Jobs.",
     fields: [{ key: "kind", label: "Script", type: "select", options: [["run_real", "Research run (run_real)"],
       ["run_daily", "Daily paper / live job (run_daily)"], ["run_intraday", "Intraday paper / live job (run_intraday)"],
-      ["check_survivorship", "Survivorship check"], ["convert_costs", "Moneta cost converter"], ["bench_speed", "Speed benchmark"]] }],
+      ["check_survivorship", "Survivorship check"], ["convert_costs", "Moneta cost converter"], ["bench_speed", "Speed benchmark"],
+      ["export_mt5_specs", "MT5 symbol specification export"], ["convert_mt5_costs", "MT5 cost converter (FX / index / metals)"],
+      ["refresh_v1_data", "v1 data refresh (sfac)"]] }],
     columns: [["Script", (d) => String(d.kind)], ["Arguments", (d) => Object.keys(d.args as object).length]],
     blank: () => ({ id: "", name: "", description: "", kind: "run_real", args: {} }),
   },
