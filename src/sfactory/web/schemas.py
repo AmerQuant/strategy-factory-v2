@@ -60,6 +60,7 @@ class Catalogue(Doc):
 class PolicyEntry(BaseModel):
     config: dict
     activation: dict | None = None
+    overlay: dict | None = None                          # daily sizing overlay (forward.daily.OVERLAY_DEFAULTS)
 
     @field_validator("config")
     @classmethod
@@ -72,6 +73,14 @@ class PolicyEntry(BaseModel):
         if v is not None:
             from sfactory.policy.edge_state import ActivationConfig
             ActivationConfig(**v)
+        return v
+
+    @field_validator("overlay")
+    @classmethod
+    def _ov(cls, v: dict | None) -> dict | None:
+        if v is not None:
+            from sfactory.forward.daily import overlay_of
+            overlay_of({"overlay": v})
         return v
 
 

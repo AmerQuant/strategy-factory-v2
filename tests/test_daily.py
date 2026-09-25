@@ -152,3 +152,46 @@ def test_fast_clock_in_the_live_book_matches_research(mkt):
     assert len(live) == 24 and live == research
     assert any(v < 10 for v in live.values())                  # the mechanism did switch symbols off
     assert DailyState.from_json(st.to_json()).weights == st.weights
+
+
+def test_overlay_factor_is_the_research_overlay_one_day_ahead():
+    from sfactory.forward.daily import overlay_scale
+    from sfactory.portfolio.sizing import drawdown_brake, vol_target_daily
+    rng = np.random.default_rng(3)
+    daily = rng.normal(20, 900, 400)
+    daily[150:190] -= 1500                                     # a drawdown that trips the brake
+    ov = {"target_vol_daily": 500.0, "lookback": 63, "lev_max": 2.0, "min_obs": 20,
+          "dd_limit": 0.1, "cut": 0.5, "resume": 0.5}
+    _, lev = vol_target_daily(daily, 500.0, 63, 2.0, 20)
+    _, exp = drawdown_brake(daily, 100_000, 0.1, 0.5, 0.5)
+    for t in range(1, len(daily)):                            # planning at the close of t-1 sizes day t
+        f = overlay_scale(daily[:t], ov, 100_000)
+        assert f["leverage"] == pytest.approx(lev[t]) and f["brake"] == exp[t]
+    assert (exp < 1).any() and (lev != 1).any()
+
+
+def test_overlay_scales_new_entries_in_the_daily_job(mkt):
+    bars, arrays, mem = mkt
+    cfg = LadderConfig(rung="A1", method="rsi", min_price=0.0, min_dollar_vol=0.0, min_is_trades=10)
+    plain = new_state([cfg], first_dp=date(2013, 1, 1), data_start=date(2010, 1, 4))
+    braked = new_state([(cfg, None, {"dd_limit": 0.001, "cut": 0.5})], first_dp=date(2013, 1, 1),
+                       data_start=date(2010, 1, 4))
+    ba, bb = SimulatedBroker(COST), SimulatedBroker(COST)
+    first = None
+    for day in _days(arrays, date(2013, 1, 2), date(2014, 1, 1)):
+        hist = bars.filter(pl.col("date") <= day)
+        daily_step(plain, arrays, hist, mem, day, ba, cost_model=COST)
+        rep = daily_step(braked, arrays, hist, mem, day, bb, cost_model=COST)
+        opens = [o for o in plain.pending if o.intent == "open"]
+        if rep["overlays"][cfg.rid]["scale"] != 1.0 and opens:
+            first = day
+            break
+        assert plain.closed_trades().equals(braked.closed_trades())   # identical until the brake first bites
+    assert first is not None                                  # the brake engaged on a day with new entries
+    qa = {o.symbol: o.qty for o in plain.pending if o.intent == "open"}
+    qb = {o.symbol: o.qty for o in braked.pending if o.intent == "open"}
+    assert qa and set(qa) == set(qb) and all(qb[s] == pytest.approx(0.5 * qa[s], rel=1e-6) for s in qa)
+    assert DailyState.from_json(braked.to_json()).row_scale == braked.row_scale
+    bad = new_state([(cfg, None, {"nope": 1})], first_dp=date(2013, 1, 1), data_start=date(2010, 1, 4))
+    with pytest.raises(ValueError, match="unknown overlay"):
+        daily_step(bad, arrays, bars, mem, date(2013, 1, 2), SimulatedBroker(COST))
