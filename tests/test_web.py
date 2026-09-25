@@ -16,7 +16,7 @@ ROW = {"method": "rsi", "direction": 1, "rung": "A1", "max_positions": 10}
 
 @pytest.fixture
 def client(tmp_path):
-    return TestClient(create_app(tmp_path / "cfg", static_dir=tmp_path / "nodist")), tmp_path
+    return TestClient(create_app(tmp_path / "cfg", static_dir=tmp_path / "nodist", token="")), tmp_path
 
 
 def test_health_meta_and_settings(client):
@@ -156,3 +156,29 @@ def test_jobs_can_import_the_package_from_a_bare_interpreter(client):
             break
         time.sleep(0.05)
     assert info["status"] == "succeeded" and info["log"] == ["VALUE 42"]
+
+
+def test_token_authentication(tmp_path):
+    tok = "correct-horse-battery-staple"
+    c = TestClient(create_app(tmp_path / "cfg", static_dir=tmp_path / "nodist", token=tok))
+    h = c.get("/api/health").json()
+    assert h["auth_required"] and not h["authenticated"] and "config_dir" not in h
+    assert c.get("/api/settings").status_code == 401 and c.get("/api/config/catalogues").status_code == 401
+    assert c.post("/api/login", json={"token": "wrong"}).status_code == 401
+    assert c.get("/api/settings", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
+    r = c.post("/api/login", json={"token": tok})
+    assert r.status_code == 200 and "sf_session" in r.cookies and tok not in r.headers.get("set-cookie", "")
+    assert c.get("/api/settings").status_code == 200 and c.get("/api/health").json()["authenticated"]
+    c.post("/api/logout")
+    c.cookies.clear()
+    assert c.get("/api/settings").status_code == 401
+
+
+def test_server_refuses_network_bind_without_token(monkeypatch, tmp_path):
+    from sfactory.web.__main__ import main
+    monkeypatch.delenv("SF_WEB_TOKEN", raising=False)
+    with pytest.raises(SystemExit, match="refusing"):
+        main(["--config", str(tmp_path), "--host", "0.0.0.0"])
+    (tmp_path / "t.txt").write_text("short", encoding="utf-8")
+    with pytest.raises(SystemExit, match="16 characters"):
+        main(["--config", str(tmp_path), "--host", "0.0.0.0", "--token-file", str(tmp_path / "t.txt")])
