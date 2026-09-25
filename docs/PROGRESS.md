@@ -5,7 +5,7 @@
 - Design: v2.1 Persian Word doc (owner); specs in docs/spec/
 - Accepted ADRs: 0001 uv + Polars; 0002 custom NumPy/Numba engine, vectorbt only as cross-check; 0003 Parquet + DuckDB
 - Accepted: 0004 parallelism (algorithmic slicing fix + stdlib process pool for the trade cache)
-- Full-repository check (2026-09-25): every file downloaded from main into a clean folder; ruff (src, tests, scripts) clean; pytest 193 passed + 1 skipped (vectorbt cross-check) before the additions below
+- Full-repository check (2026-09-25): every file downloaded from main into a clean folder; ruff (src, tests, scripts) clean; pytest 193 passed + 1 skipped (vectorbt cross-check) before the additions below; last full run on the clean copy: 206 passed + 1 skipped
 
 ## Done (skeleton)
 - data: contracts, CRSP-style dividend adjustment, synthetic market generator, point-in-time eligibility
@@ -13,7 +13,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 202 passing (vectorbt cross-check runs when the `crosscheck` group is installed; web API tests with the `web` group) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 207 (206 run without the `crosscheck` group; web API tests need the `web` group) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -48,6 +48,8 @@
 - intraday: session-close exit (`flat_eod`), DST-aware broker clock (`clock_shift="ny"`), intraday paper planning with research parity (docs/spec/intraday.md)
 - web admin + dashboard: FastAPI backend (validated config documents, runs / registry / live readers, job runner) + React/TS dashboard with light and dark mode; optional token authentication with sign-in screen, refused network bind without a token (docs/spec/web.md)
 - survivorship check of the store: delisting profile, heuristic verdict, direct membership leaks; in every run_real evidence + caveat; `scripts/check_survivorship.py` (docs/spec/survivorship.md)
+- daily sizing overlays in the live book: policy entries with `overlay` (vol target, drawdown brake) scale new entries by the research overlay factor one day ahead; editor form in the admin (docs/spec/daily.md)
+- intraday paper / live job: `bar_step` + `scripts/run_intraday.py` (catch-up, restartable per bar, live gaps refused); paper == research trades over 217 hourly bars with a restart before every bar (docs/spec/daily.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -65,23 +67,27 @@
 4. ~~Cross-row risk budget in the combined policy~~ (done)
 5. ~~Paper dividends; MT5 commission / swap from deal history~~ (done)
 6. ~~Precompute for the robustness caches~~ (done)
-7. ~~Intraday: session exits, DST-aware clock, intraday planner~~ (done; per-bar scheduler open)
+7. ~~Intraday: session exits, DST-aware clock, intraday planner~~ (done)
 8. ~~Web admin + dashboard~~ (done)
 9. ~~Survivorship check of the store~~ (done)
 10. ~~Web authentication~~ (done: token + session cookie)
-11. Next: daily sizing overlays in the live book; intraday per-bar scheduler; preset scheduling in the dashboard
+11. ~~Daily sizing overlays in the live book~~ (done, with the admin form)
+12. ~~Intraday per-bar job~~ (done)
+13. Scheduling: waiting for the owner's choice between the options in docs/spec/scheduling.md
+14. Optional next: alerts + kill switch for live; Moneta FX / index / metals catalogue; CPCV and HRP; ML meta-labeling rows; market impact model; gap rows and announcement-date events
 
 ## Next on the owner's machine
 1. Survivorship check first: `scripts/check_survivorship.py --store <store> [--membership ...]` (docs/spec/survivorship.md)
 2. First real run: `scripts/run_real.py` on the v1 store (bars ready); then membership + dividends files when located (or `fetch_alpaca_dividends.py`)
 3. CI: copy `docs/ci_proposed.yml` over `.github/workflows/ci.yml` (web tests, frontend build, non-blocking vectorbt cross-check); the assistant's token cannot write workflow files
-4. Broker bridge live test: `MT5Broker(dry_run=True).connect(...)` on the Moneta demo account, check `positions()` and the dry-run requests, then one small real order
-5. Finding to revisit on real data: every MR row fails the 1-bar delay warning on synthetic data (short-horizon MR is delay-sensitive) — check on real bars before going live
-6. Run `run_edge_state` per accepted row on real data: the persistence verdict decides whether any mechanism is used
-7. Hourly run: `run_real.py --timeframe 1H` (and `--resample 4h --clock-shift ny` for the broker-aligned 4H set)
-8. Diverse families on real data: `run_real.py --diverse` (event rows switch on with `--dividends` / `--membership`)
-9. `run_sizing` per accepted row on real data: vol sizing is kept only if it passes the Sharpe gate
-10. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
-11. Costs: `scripts/convert_moneta_costs.py` (see docs/spec/costs_v1.md), then `run_real.py --costs costs_moneta.csv`
-12. Paper trading: `scripts/run_daily.py --init ...` with the holdout policy, then one run per trading day (docs/spec/daily.md)
-13. Dashboard: `uv sync --group web`, `cd web && npm install && npm run build`, `uv run python -m sfactory.web --config <dir>` (add `SF_WEB_TOKEN` + `--host 0.0.0.0` for network access); commit web/package-lock.json
+4. Choose a scheduling option (docs/spec/scheduling.md)
+5. Broker bridge live test: `MT5Broker(dry_run=True).connect(...)` on the Moneta demo account, check `positions()` and the dry-run requests, then one small real order
+6. Finding to revisit on real data: every MR row fails the 1-bar delay warning on synthetic data (short-horizon MR is delay-sensitive) — check on real bars before going live
+7. Run `run_edge_state` per accepted row on real data: the persistence verdict decides whether any mechanism is used
+8. Hourly run: `run_real.py --timeframe 1H` (and `--resample 4h --clock-shift ny` for the broker-aligned 4H set); paper-trade it with `run_intraday.py`
+9. Diverse families on real data: `run_real.py --diverse` (event rows switch on with `--dividends` / `--membership`)
+10. `run_sizing` per accepted row on real data: vol sizing / overlays are kept only if they pass the Sharpe gate
+11. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
+12. Costs: `scripts/convert_moneta_costs.py` (see docs/spec/costs_v1.md), then `run_real.py --costs costs_moneta.csv`
+13. Paper trading: `scripts/run_daily.py --init ...` with the holdout policy, then one run per trading day (docs/spec/daily.md)
+14. Dashboard: `uv sync --group web`, `cd web && npm install && npm run build`, `uv run python -m sfactory.web --config <dir>` (add `SF_WEB_TOKEN` + `--host 0.0.0.0` for network access); commit web/package-lock.json
