@@ -1,6 +1,6 @@
-import { Braces, Plus, Trash2 } from "lucide-react";
+import { Braces, Gauge, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button, Dialog, FamilyDot, Select, Textarea } from "@/components/ui";
+import { Button, Dialog, FamilyDot, Field, Input, Select, Tag, Textarea } from "@/components/ui";
 import { type Meta } from "@/lib/api";
 
 export type Row = Record<string, unknown>;
@@ -9,6 +9,7 @@ export type Row = Record<string, unknown>;
 export function RowsEditor({ rows, onChange, meta, withActivation }: { rows: Row[]; onChange: (r: Row[]) => void;
   meta: Meta; withActivation?: boolean }) {
   const [json, setJson] = useState<number | null>(null);
+  const [ovRow, setOvRow] = useState<number | null>(null);
   const cfg = (r: Row): Row => (withActivation ? (r.config as Row) : r);
   const put = (i: number, patch: Row, act?: Row | null) => onChange(rows.map((r, j) => {
     if (j !== i) return r;
@@ -30,7 +31,7 @@ export function RowsEditor({ rows, onChange, meta, withActivation }: { rows: Row
         <table className="w-full text-sm">
           <thead><tr className="border-b border-line bg-sunken text-left text-xs text-muted [&>th]:px-2 [&>th]:py-2 [&>th]:font-medium">
             <th>Method</th><th>Side</th><th>Rung</th><th>Positions</th><th>Sizing</th><th>Universe</th>
-            {withActivation && <th>Edge on/off</th>}<th />
+            {withActivation && <><th>Edge on/off</th><th>Daily overlay</th></>}<th />
           </tr></thead>
           <tbody className="[&>tr]:border-b [&>tr]:border-line/60 [&_td]:px-2 [&_td]:py-1.5">
             {rows.map((r, i) => {
@@ -59,6 +60,10 @@ export function RowsEditor({ rows, onChange, meta, withActivation }: { rows: Row
                       <option value="">Always on</option>
                       {meta.activation_modes.filter((m) => m !== "always").map((m) => <option key={m} value={m}>{m}</option>)}
                     </Select></td>)}
+                  {withActivation && (
+                    <td><button className="flex items-center gap-1.5 text-xs" onClick={() => setOvRow(i)}>
+                      <Gauge className="size-3.5 text-muted" /><OverlaySummary ov={r.overlay as Row | null | undefined} />
+                    </button></td>)}
                   <td className="whitespace-nowrap text-right">
                     <Button size="sm" variant="ghost" onClick={() => setJson(i)} aria-label="Edit all fields"><Braces className="size-3.5" /></Button>
                     <Button size="sm" variant="ghost" onClick={() => onChange(rows.filter((_, j) => j !== i))} aria-label="Remove row"><Trash2 className="size-3.5" /></Button>
@@ -77,6 +82,9 @@ export function RowsEditor({ rows, onChange, meta, withActivation }: { rows: Row
           <Button size="sm" onClick={() => addSet("diverse")}>Add the diverse-family rows</Button>
         </>}
       </div>
+      {withActivation && <OverlayDialog open={ovRow !== null} value={ovRow !== null ? (rows[ovRow].overlay as Row | null) : null}
+        onClose={() => setOvRow(null)}
+        onSave={(ov) => { if (ovRow !== null) onChange(rows.map((r, j) => (j === ovRow ? { ...r, overlay: ov } : r))); setOvRow(null); }} />}
       <JsonRow open={json !== null} row={json !== null ? rows[json] : null} onClose={() => setJson(null)}
         onSave={(v) => { if (json !== null) onChange(rows.map((r, j) => (j === json ? v : r))); setJson(null); }} />
     </div>
@@ -103,4 +111,50 @@ function JsonRow({ open, row, onClose, onSave }: { open: boolean; row: Row | nul
 function OnOpen({ run, dep }: { run: () => void; dep: unknown }) {
   useEffect(run, [dep]);
   return null;
+}
+
+function OverlaySummary({ ov }: { ov: Row | null | undefined }) {
+  if (!ov) return <span className="text-muted">None</span>;
+  const parts = [ov.target_vol_daily ? "vol target" : null, ov.dd_limit ? "drawdown brake" : null].filter(Boolean);
+  return parts.length ? <Tag tone="accent">{parts.join(" + ")}</Tag> : <span className="text-muted">None</span>;
+}
+
+const OV_FIELDS: [string, string, string][] = [
+  ["target_vol_daily", "Target daily volatility", "In pnl units per day; empty = no vol target"],
+  ["lookback", "Lookback (days)", "Realised volatility window"],
+  ["lev_max", "Maximum leverage", "Upper bound of the vol-target factor"],
+  ["min_obs", "Minimum days", "Factor stays 1 until this many days exist"],
+  ["dd_limit", "Drawdown limit", "Fraction of the row's capital; empty = no brake"],
+  ["cut", "Exposure while braked", "For example 0.5"],
+  ["resume", "Resume below", "Fraction of the limit at which the brake releases"],
+];
+const OV_DEFAULTS: Row = { target_vol_daily: null, lookback: 63, lev_max: 2, min_obs: 20, dd_limit: null, cut: 0.5, resume: 0.5 };
+
+/** Daily sizing overlay of a policy entry: use only what the sizing ablation accepted for the row. */
+function OverlayDialog({ open, value, onClose, onSave }: { open: boolean; value: Row | null; onClose: () => void;
+  onSave: (v: Row | null) => void }) {
+  const [f, setF] = useState<Row>(OV_DEFAULTS);
+  useEffect(() => { if (open) setF({ ...OV_DEFAULTS, ...(value ?? {}) }); }, [open, value]);
+  const set = (k: string, v: string) => setF((x) => ({ ...x, [k]: v === "" ? null : Number(v) }));
+  const active = Boolean(f.target_vol_daily) || Boolean(f.dd_limit);
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()} title="Daily sizing overlay">
+      <p className="mb-4 text-sm text-muted">Scales the row's new entries by the factor the research overlay would apply the next
+        day. Add it only if the sizing ablation accepted it for this row.</p>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {OV_FIELDS.map(([k, label, hint]) => (
+          <Field key={k} label={label} hint={hint}>
+            <Input type="number" step="any" value={f[k] === null || f[k] === undefined ? "" : String(f[k])} onChange={(e) => set(k, e.target.value)} />
+          </Field>
+        ))}
+      </div>
+      <div className="mt-5 flex justify-between gap-2">
+        <Button variant="ghost" onClick={() => onSave(null)}>Remove overlay</Button>
+        <div className="flex gap-2">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={() => onSave(active ? f : null)}>Apply</Button>
+        </div>
+      </div>
+    </Dialog>
+  );
 }
