@@ -142,7 +142,7 @@ def main(argv=None) -> dict:
         precompute(cache, rows, n_workers=a.workers or None)
     budget = RiskBudget(a.max_row_weight, a.max_family_weight, a.target_vol, capital=base.capital)
     cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev,
-                      budget=budget if budget.active else None)
+                      budget=budget if budget.active else None, workers=a.workers)
     analysis = {}
     if a.analyze_accepted:
         analysis = analyze_rows(fm, cache, dev, mem, [cat["results"][i].config for i in cat["accepted"]], reg)

@@ -1,6 +1,7 @@
 import multiprocessing as mp
 from dataclasses import replace
 
+import polars as pl
 from conftest import build
 
 from sfactory.data.regime import market_up_series
@@ -64,3 +65,15 @@ def test_precompute_writes_parquet_for_the_next_run(tmp_path):
     again.set_market_regime(c._regime_dates, c._regime_flags, c._regime_id)
     r = run_ladder(fm, again, dev, mem, replace(ROWS[0], rung="A1"))
     assert again.computed == 0 and again.loaded > 0 and r.stats["n"] > 0
+
+
+def test_robustness_variants_precomputed_in_parallel_give_the_same_report():
+    from sfactory.evaluation.robustness import run_robustness
+    fm, cache, dev, mem = _market("rob")
+    divs = dev.head(0).select("symbol").with_columns(ex_date=dev["date"].head(0), amount=pl.lit(0.0))
+    cfg = LadderConfig(rung="A1", method="rsi", max_positions=4)
+    a = run_robustness(fm, cache, dev, divs, mem, cfg)
+    fm, cache2, dev, mem = _market("rob")
+    b = run_robustness(fm, cache2, dev, divs, mem, cfg, workers=2)
+    for k in ("base", "cost_x1.5", "cost_x2", "delay_1bar", "noise", "mandatory", "warnings"):
+        assert a[k] == b[k], k
