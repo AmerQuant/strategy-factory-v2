@@ -50,8 +50,17 @@ def regime_breakdown(trades: pl.DataFrame, dates: np.ndarray, flags: np.ndarray)
     return out
 
 
+def _pre(cache: TradeCache, cfg, workers: int) -> None:
+    if workers != 1:
+        from sfactory.engine.parallel import precompute
+        precompute(cache, [cfg], n_workers=workers or None)
+
+
 def run_robustness(fm, cache: TradeCache, bars_dev: pl.DataFrame, divs_dev: pl.DataFrame, membership,
-                   cfg: LadderConfig, dd_limit: float = 0.35, noise_sd: float = 0.002, seed: int = 0) -> dict:
+                   cfg: LadderConfig, dd_limit: float = 0.35, noise_sd: float = 0.002, seed: int = 0,
+                   workers: int = 1) -> dict:
+    """workers != 1: every variant cache (cost stress, delay, noise) is filled by the parallel precompute
+    first (ADR-0004); results do not depend on it."""
     base = run_row_any(fm, cache, bars_dev, membership, cfg)
     b_daily = daily_pnl(base.oos_trades)
     exp0 = base.stats["expectancy"]
@@ -59,8 +68,11 @@ def run_robustness(fm, cache: TradeCache, bars_dev: pl.DataFrame, divs_dev: pl.D
     for f in (1.5, 2.0):
         c2 = TradeCache(cache.arrays, cache.data_version, cache.notional, cost_model=cache.cost_model.stressed(f))
         c2._regime_dates, c2._regime_flags, c2._regime_id = cache._regime_dates, cache._regime_flags, cache._regime_id
+        c2._index_add, c2._events_id = cache._index_add, cache._events_id
+        _pre(c2, cfg, workers)
         r = run_row_any(fm, c2, bars_dev, membership, cfg)
         out[f"cost_x{f:g}"] = {"sharpe": _sr(daily_pnl(r.oos_trades)), "expectancy": r.stats["expectancy"]}
+    _pre(cache, replace(cfg, entry_delay=1), workers)
     rd = run_row_any(fm, cache, bars_dev, membership, replace(cfg, entry_delay=1))  # works for ensembles too
     out["delay_1bar"] = {"expectancy": rd.stats["expectancy"], "keep": rd.stats["expectancy"] / exp0 if exp0 > 0 else 0}
     rng = np.random.default_rng(seed)
@@ -74,6 +86,8 @@ def run_robustness(fm, cache: TradeCache, bars_dev: pl.DataFrame, divs_dev: pl.D
                     cost_model=cache.cost_model)
     if cache._regime_dates is not None:
         cn.set_market_regime(*market_up_series(noisy), cache._regime_id + "-noise")
+    cn._index_add, cn._events_id = cache._index_add, cache._events_id
+    _pre(cn, cfg, workers)
     rn = run_row_any(fm, cn, noisy, membership, cfg)
     out["noise"] = {"sharpe": _sr(daily_pnl(rn.oos_trades))}
     out["mc_dd_p95"] = mc_drawdown_p95(b_daily, cfg.capital, seed=seed) if len(b_daily) > 40 else float("nan")
