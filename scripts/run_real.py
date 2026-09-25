@@ -16,6 +16,8 @@ moves the clock to a broker day (17:00 New York = 00:00). Resampled / shifted da
 `--analyze-accepted` adds the edge on/off and sizing ablations of every accepted row to the evidence (candidates
 for the next frozen policy; nothing is switched on automatically).
 
+Risk budget for the combined policy: `--max-row-weight 0.25 --max-family-weight 0.5 --target-vol 0.10`.
+
 Speed: `--workers 0` precomputes the trade cache on all cores first (ADR-0004); results do not depend on it.
 """
 from __future__ import annotations
@@ -52,6 +54,7 @@ from sfactory.policy.catalog import (
     equity_rows,
 )
 from sfactory.policy.ladder import LadderConfig
+from sfactory.portfolio.combine import RiskBudget
 from sfactory.registry.repo import Registry
 from sfactory.report.html import render_html
 from sfactory.timeline.folds import FoldManager
@@ -81,6 +84,9 @@ def parse(argv=None):
     ap.add_argument("--open-holdout", action="store_true", help="burns the holdout for this data version")
     ap.add_argument("--analyze-accepted", action="store_true",
                     help="edge on/off and sizing ablations for every accepted row (registry trials; evidence)")
+    ap.add_argument("--max-row-weight", type=float, help="risk budget: cap per row in the combined policy")
+    ap.add_argument("--max-family-weight", type=float, help="risk budget: cap per edge family (MR, TF, VOL, ...)")
+    ap.add_argument("--target-vol", type=float, help="risk budget: combined policy vol target, fraction per year")
     ap.add_argument("--workers", type=int, default=1,
                     help="processes for the trade-cache precompute (0 = all cores); results do not depend on it")
     return ap.parse_args(argv)
@@ -134,7 +140,9 @@ def main(argv=None) -> dict:
     reg = Registry(a.registry)
     if a.workers != 1:
         precompute(cache, rows, n_workers=a.workers or None)
-    cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev)
+    budget = RiskBudget(a.max_row_weight, a.max_family_weight, a.target_vol, capital=base.capital)
+    cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev,
+                      budget=budget if budget.active else None)
     analysis = {}
     if a.analyze_accepted:
         analysis = analyze_rows(fm, cache, dev, mem, [cat["results"][i].config for i in cat["accepted"]], reg)

@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 177 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 181 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -41,6 +41,7 @@
 - daily paper / live job: persistent JSON state, open / close phases (MT5 at the open, plan after the close), DP book refresh, positions keep the setting they were opened with, `scripts/run_daily.py` (docs/spec/daily.md)
 - run_real --analyze-accepted: edge on/off + sizing ablations per accepted row in the evidence (evaluation/row_analysis.py)
 - fast clock in the live book: policy entries with an accepted activation, sub-DP weights from the research decide_sub (live == research tested)
+- cross-row risk budget in the combined policy: joint row / family caps (water filling) + ex-ante portfolio vol target, used in the path-2 test too; run_real --max-row-weight / --max-family-weight / --target-vol (docs/spec/risk_budget.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -55,7 +56,7 @@
 1. ~~Daily paper / live job with state file~~ (done)
 2. ~~run_edge_state and run_sizing per accepted row inside run_real + evidence~~ (done; shown in the web dashboard)
 3. ~~Fast clock (edge on/off) in the live book~~ (done)
-4. Cross-row risk budget in the combined policy
+4. ~~Cross-row risk budget in the combined policy~~ (done)
 5. Paper dividends; MT5 commission / swap from deal history
 6. Precompute for the robustness caches
 7. Intraday: session exits, DST-aware clock, intraday planner
