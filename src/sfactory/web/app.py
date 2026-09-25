@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from sfactory.forward import alerts, killswitch
 from sfactory.web import readers
 from sfactory.web.config_store import ConfigStore
 from sfactory.web.jobs import JobManager
@@ -242,6 +243,47 @@ def create_app(config_dir: str | Path, static_dir: str | Path | None = None, tok
     @app.get("/api/scheduler")
     def scheduler():
         return readers.scheduler_summary(store.root)
+
+    # --- kill switch and events --------------------------------------------------------------------------
+    kfile, efile = store.root / "killswitch.json", store.root / "events.jsonl"
+
+    @app.get("/api/killswitch")
+    def get_kill():
+        return killswitch.load(kfile).to_json()
+
+    @app.post("/api/killswitch/trip")
+    def trip_kill(body: dict):
+        mode = body.get("mode", "halt_new")
+        if mode not in killswitch.MODES:
+            raise HTTPException(422, f"mode must be one of {killswitch.MODES}")
+        reason = str(body.get("reason") or "stopped from the dashboard")
+        k = killswitch.trip(kfile, reason, by="dashboard", mode=mode)
+        alerts.emit(efile, "critical", "dashboard", f"kill switch ({k.mode}): {reason}")
+        return k.to_json()
+
+    @app.post("/api/killswitch/resume")
+    def resume_kill():
+        k = killswitch.resume(kfile, by="dashboard")
+        alerts.emit(efile, "info", "dashboard", "kill switch released: trading resumes at the next run")
+        return k.to_json()
+
+    @app.put("/api/killswitch/limits")
+    def put_limits(body: dict):
+        k = killswitch.load(kfile)
+        try:
+            lim = killswitch.Limits(**body)
+            if lim.capital <= 0 or any(v is not None and v <= 0 for v in (lim.max_drawdown, lim.max_daily_loss,
+                                                                             lim.max_recon_failures)):
+                raise ValueError("limits must be positive (leave a limit empty to switch it off)")
+        except (TypeError, ValueError) as e:
+            raise HTTPException(422, str(e)) from e
+        k.limits = lim
+        killswitch.save(kfile, k)
+        return k.to_json()
+
+    @app.get("/api/events")
+    def events(limit: int = 200):
+        return alerts.read(efile, limit)
 
     # --- jobs ------------------------------------------------------------------------------------------------
     @app.get("/api/jobs")
