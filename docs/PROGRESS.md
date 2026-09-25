@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 183 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 189 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -43,6 +43,8 @@
 - fast clock in the live book: policy entries with an accepted activation, sub-DP weights from the research decide_sub (live == research tested)
 - cross-row risk budget in the combined policy: joint row / family caps (water filling) + ex-ante portfolio vol target, used in the path-2 test too; run_real --max-row-weight / --max-family-weight / --target-vol (docs/spec/risk_budget.md)
 - paper cash flows: dividends on ex-dates and modelled swap in the row books (research parity per share tested); MT5 real commission / fee from the deal history, deal_costs and open_swap reports
+- robustness variant caches (cost stress, delay, noise) precomputed in parallel with --workers
+- intraday: session-close exit (`flat_eod`), DST-aware broker clock (`clock_shift="ny"`), intraday paper planning with research parity (docs/spec/intraday.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -59,8 +61,8 @@
 3. ~~Fast clock (edge on/off) in the live book~~ (done)
 4. ~~Cross-row risk budget in the combined policy~~ (done)
 5. ~~Paper dividends; MT5 commission / swap from deal history~~ (done)
-6. Precompute for the robustness caches
-7. Intraday: session exits, DST-aware clock, intraday planner
+6. ~~Precompute for the robustness caches~~ (done)
+7. ~~Intraday: session exits, DST-aware clock, intraday planner~~ (done; per-bar scheduler open)
 8. Web admin + dashboard (approved stack: FastAPI + React/TypeScript + Vite + Tailwind + shadcn/ui + ECharts; English UI, light/dark)
 
 ## Next on the owner's machine
@@ -69,7 +71,7 @@
 3. Broker bridge live test: `MT5Broker(dry_run=True).connect(...)` on the Moneta demo account, check `positions()` and the dry-run requests, then one small real order
 4. Finding to revisit on real data: every MR row fails the 1-bar delay warning on synthetic data (short-horizon MR is delay-sensitive) — check on real bars before going live
 5. Run `run_edge_state` per accepted row on real data: the persistence verdict decides whether any mechanism is used
-6. Hourly run: `run_real.py --timeframe 1H` (and `--resample 4h --clock-shift 7h` for the broker-aligned 4H set)
+6. Hourly run: `run_real.py --timeframe 1H` (and `--resample 4h --clock-shift ny` for the broker-aligned 4H set)
 7. Diverse families on real data: `run_real.py --diverse` (event rows switch on with `--dividends` / `--membership`)
 8. `run_sizing` per accepted row on real data: vol sizing is kept only if it passes the Sharpe gate
 9. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
