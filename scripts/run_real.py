@@ -4,8 +4,8 @@
         --out D:/AmerAndish/Projects/Trade/sf2_runs/run1 --registry D:/AmerAndish/Projects/Trade/sf2_runs/registry.duckdb
 
 load -> audit (critical symbols excluded) -> optional dividends / membership -> folds from the data span
-(holdout = last 20 %, >= 18 months) -> 18-row catalogue + 4 family ensembles -> screening + robustness ->
-combined policy -> [--open-holdout: the one-shot holdout] -> evidence.json + report.html.
+(holdout = last 20 %, >= 18 months) -> 18-row catalogue (+ `--diverse` family rows) + family ensembles ->
+screening + robustness -> combined policy -> [--open-holdout: the one-shot holdout] -> evidence.json + report.html.
 
 The registry file must be the same across runs: every run adds its trials there and DSR counts them all.
 Without --membership the universe is the top-N by trailing dollar volume at each DP (point-in-time).
@@ -34,7 +34,16 @@ from sfactory.engine.cache import TradeCache, prepare_arrays
 from sfactory.evaluation.catalog_runner import run_catalog
 from sfactory.evaluation.evidence import build_evidence, dumps
 from sfactory.evaluation.holdout import run_holdout
-from sfactory.policy.catalog import CATALOG_VERSION, MR_METHODS, TF_METHODS, ensemble_rows, equity_rows
+from sfactory.policy.catalog import (
+    CATALOG_VERSION,
+    DIVERSE_CATALOG_VERSION,
+    DIVERSE_METHODS,
+    MR_METHODS,
+    TF_METHODS,
+    diverse_rows,
+    ensemble_rows,
+    equity_rows,
+)
 from sfactory.policy.ladder import LadderConfig
 from sfactory.registry.repo import Registry
 from sfactory.report.html import render_html
@@ -55,6 +64,8 @@ def parse(argv=None):
     ap.add_argument("--dividends", help="parquet: symbol, ex_date, amount (split-only basis)")
     ap.add_argument("--costs", default="moneta", help="'moneta' (share-CFD proxy), 'flat5', or a CSV path")
     ap.add_argument("--methods", help="comma list to restrict the catalogue (default: all 9)")
+    ap.add_argument("--diverse", action="store_true",
+                    help="add the diverse-family rows (VOL, XS, CAL; EV rows with --dividends / --membership)")
     ap.add_argument("--rung", default="A1")
     ap.add_argument("--max-positions", type=int, default=10)
     ap.add_argument("--max-new", type=int, default=3)
@@ -96,22 +107,30 @@ def main(argv=None) -> dict:
     dev, ddev = fm.dev_view(bars), fm.dev_view(divs, "ex_date")
     cache = TradeCache(prepare_arrays(dev, ddev), version, cost_model=costs, cache_dir=out / "cache")
     cache.set_market_regime(*market_up_series(dev), "eqw-ma200")
+    if mem is not None:
+        cache.set_index_events(mem)
     base = LadderConfig(rung=a.rung, max_positions=a.max_positions, max_new_per_day=a.max_new,
                         universe_mode="membership" if mem is not None else "top_liquidity", universe_top_n=a.top_n)
     rows = equity_rows(base)
+    if a.diverse:
+        rows += diverse_rows(base, dividends=bool(a.dividends), index_events=mem is not None)
     if a.methods:
         keep = set(a.methods.split(","))
-        assert keep <= set(MR_METHODS + TF_METHODS), keep
+        assert keep <= set(MR_METHODS + TF_METHODS + DIVERSE_METHODS), keep
         rows = [r for r in rows if r.method in keep]
-    rows = rows + ([] if a.no_ensembles else [replace(e, rung=a.rung) for e in ensemble_rows(rows)])
+    ens = [] if a.no_ensembles else [replace(e, rung=a.rung) for e in ensemble_rows(rows) if len(e.members) > 1]
+    rows = rows + ens
     reg = Registry(a.registry)
     cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev)
     hold = None
     if a.open_holdout:
         full = TradeCache(prepare_arrays(bars, divs), version + "-full", cost_model=costs)
         full.set_market_regime(*market_up_series(bars), "eqw-ma200")
+        if mem is not None:
+            full.set_index_events(mem)
         hold = run_holdout(fm, full, bars, mem, cat, reg, version)
-    meta = {"data": version, "catalog": CATALOG_VERSION, "universe": base.universe_mode, "top_n": a.top_n,
+    catalog = CATALOG_VERSION + (f"+{DIVERSE_CATALOG_VERSION}" if a.diverse else "")
+    meta = {"data": version, "catalog": catalog, "universe": base.universe_mode, "top_n": a.top_n,
             "timeframe": a.resample or a.timeframe, "clock_shift": a.clock_shift,
             "symbols_loaded": len(load.symbols), "symbols_skipped": load.skipped, "audit": audit,
             "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()}}
