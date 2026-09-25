@@ -12,7 +12,7 @@
 - engine: Numba cell engine (next-open fills, costs, dividends, forced exit) + compute-once trade cache
 - signals: causal Wilder RSI
 - policy: RSI row at A0/A1; registry (DuckDB) with trials + fold decisions; basic metrics
-- tests: 189 passing (vectorbt cross-check runs when the `crosscheck` group is installed) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
+- tests: 194 passing (vectorbt cross-check runs when the `crosscheck` group is installed; web tests need the `web` group) (see docs/spec/skeleton.md, docs/spec/evaluation.md)
 - evaluation: FoldGrid precomputation; benchmarks grid-ensemble, frozen-first, random-choice; rank IC
 - engine: optional Parquet-backed trade cache (keyed by rule, params, data version, cost model)
 - costs: per-symbol CostModel (spread/commission/slippage, stress factor) in the cache key
@@ -45,6 +45,7 @@
 - paper cash flows: dividends on ex-dates and modelled swap in the row books (research parity per share tested); MT5 real commission / fee from the deal history, deal_costs and open_swap reports
 - robustness variant caches (cost stress, delay, noise) precomputed in parallel with --workers
 - intraday: session-close exit (`flat_eod`), DST-aware broker clock (`clock_shift="ny"`), intraday paper planning with research parity (docs/spec/intraday.md)
+- web admin + dashboard: FastAPI API (validated config documents, runs, registry, live books, jobs) and React / TypeScript / Tailwind / ECharts UI with light and dark mode (docs/spec/web.md)
 
 ## Code roadmap (no owner machine needed; one or two packages per chat)
 1. ~~Edge on/off mechanisms~~ (done; integration into catalogue / evidence / live book still open, see spec)
@@ -63,7 +64,7 @@
 5. ~~Paper dividends; MT5 commission / swap from deal history~~ (done)
 6. ~~Precompute for the robustness caches~~ (done)
 7. ~~Intraday: session exits, DST-aware clock, intraday planner~~ (done; per-bar scheduler open)
-8. Web admin + dashboard (approved stack: FastAPI + React/TypeScript + Vite + Tailwind + shadcn/ui + ECharts; English UI, light/dark)
+8. ~~Web admin + dashboard~~ (done; login / multi-user and a built-in job scheduler open)
 
 ## Next on the owner's machine
 1. First real run: `scripts/run_real.py` on the v1 store (bars ready); then membership + dividends files when located (or `fetch_alpaca_dividends.py`)
@@ -77,3 +78,4 @@
 9. Speed: `scripts/bench_speed.py --symbols 1000 --workers 1,4,8` (and `--store`), then `run_real.py --workers 0`
 10. Costs: `scripts/convert_moneta_costs.py` (see docs/spec/costs_v1.md), then `run_real.py --costs costs_moneta.csv`
 11. Paper trading: `scripts/run_daily.py --init ...` with the holdout policy, then one run per trading day (docs/spec/daily.md)
+12. Web: `uv sync --group web`, `cd web && npm install && npm run build`, then `python -m sfactory.web --config <dir>`; commit web/package-lock.json (docs/spec/web.md)

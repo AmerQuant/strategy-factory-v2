@@ -202,15 +202,18 @@ function Analysis({ d }: { d: Evidence }) {
 function RowDialog({ runId, row, onClose }: { runId: string; row: string | null; onClose: () => void }) {
   const q = useApi<{ fold_decisions: Record<string, unknown>[] | null } & EvidenceRow>(row ? `/runs/${runId}/rows/${encodeURIComponent(row)}` : null);
   const folds = q.data?.fold_decisions ?? [];
+  const cols = [...new Set(folds.flatMap((f) => Object.keys(f)))];   // whatever the ladder recorded per fold
   return (
     <Dialog open={row !== null} onOpenChange={(o) => !o && onClose()} title={row ?? ""} wide>
       {!folds.length ? <p className="text-sm text-muted">Fold decisions are stored for accepted rows only.</p> : (
-        <Table head={["Fold", "Decision point", "Eligible", "Threshold", "Exit", "Filters"]}>
+        <Table head={cols}>
           {folds.map((f, i) => (
             <tr key={i}>
-              <td>{String(f.fold)}</td><td>{String(f.dp)}</td><td>{String(f.n_eligible ?? "–")}</td>
-              <td>{String(f.threshold ?? "–")}</td><td className="text-xs">{String(f.exit ?? "–")}</td>
-              <td className="text-xs">{Array.isArray(f.filters) && f.filters.length ? f.filters.join(", ") : "–"}</td>
+              {cols.map((k) => {
+                const v = f[k];
+                return <td key={k} className="max-w-72 truncate text-xs" title={typeof v === "object" ? JSON.stringify(v) : String(v ?? "")}>
+                  {v === null || v === undefined ? "–" : typeof v === "object" ? JSON.stringify(v) : String(v)}</td>;
+              })}
             </tr>
           ))}
         </Table>
