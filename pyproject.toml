@@ -8,6 +8,7 @@ dependencies = ["numpy>=1.26", "polars>=1.0", "numba>=0.60", "duckdb>=1.0"]
 [dependency-groups]
 dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.5", "mypy>=1.10"]
 crosscheck = ["vectorbt>=0.26", "plotly<6"]  # ADR-0002 reference engine; test auto-skips without it
+web = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27"]  # admin + dashboard (src/sfactory/web, web/)
 
 [build-system]
 requires = ["hatchling"]
