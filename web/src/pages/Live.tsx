@@ -1,16 +1,20 @@
+import { OctagonX, Play, ShieldAlert } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { axis, Chart } from "@/components/Chart";
 import { PageHead } from "@/components/Layout";
-import { Empty, FamilyDot, Panel, Signed, Table, Tabs, Tag } from "@/components/ui";
-import { type LiveDetail, type LiveSummary, useApi } from "@/lib/api";
-import { familyOf, money, num } from "@/lib/utils";
+import { Button, Dialog, Empty, FamilyDot, Field, Input, Panel, Signed, Table, Tabs, Tag } from "@/components/ui";
+import { type KillSwitch, type Limits, type LiveDetail, type LiveSummary, type PlatformEvent, useApi, useSave } from "@/lib/api";
+import { familyOf, money, num, when } from "@/lib/utils";
 
 export function Live() {
   const l = useApi<LiveSummary[]>("/live", { refetchInterval: 30000 });
   return (
     <>
       <PageHead title="Paper & live" sub="Books kept by scripts/run_daily.py, one state file each." />
-      <Panel flush>
+      <KillPanel />
+      <Panel flush title="Books">
         {l.data?.length ? (
           <Table head={["Book", "Last day", "Last decision point", "Rows", "Open positions", "Pending orders", "Closed trades", "Net P&L", "Reconciliation"]}>
             {l.data.map((b) => (
@@ -25,6 +29,90 @@ export function Live() {
         ) : <Empty title="No books yet">Set the live folder in Platform settings and initialise a book with run_daily.py --init.</Empty>}
       </Panel>
     </>
+  );
+}
+
+function KillPanel() {
+  const k = useApi<KillSwitch>("/killswitch", { refetchInterval: 10000 });
+  const ev = useApi<PlatformEvent[]>("/events?limit=50", { refetchInterval: 15000 });
+  const save = useSave<KillSwitch>(["/killswitch", "/events?limit=50"]);
+  const [confirm, setConfirm] = useState<"halt_new" | "flatten" | "resume" | null>(null);
+  const [reason, setReason] = useState("");
+  const [lim, setLim] = useState<Limits | null>(null);
+  useEffect(() => { if (k.data) setLim(k.data.limits); }, [k.data]);
+  const d = k.data;
+  if (!d || !lim) return null;
+  const act = () => {
+    const req = confirm === "resume" ? { method: "post" as const, path: "/killswitch/resume" }
+      : { method: "post" as const, path: "/killswitch/trip", body: { mode: confirm, reason: reason || "stopped from the dashboard" } };
+    save.mutate(req, { onSuccess: () => { toast.success(confirm === "resume" ? "Trading resumes at the next run" : "Kill switch on"); setConfirm(null); setReason(""); },
+      onError: (e) => toast.error(e.message) });
+  };
+  const pct = (v: number | null) => (v === null ? "" : String(+(v * 100).toFixed(4)));
+  const setPct = (key: keyof Limits, v: string) => setLim({ ...lim, [key]: v === "" ? null : Number(v) / 100 });
+  const saveLimits = () => save.mutate({ method: "put", path: "/killswitch/limits", body: lim },
+    { onSuccess: () => toast.success("Limits saved"), onError: (e) => toast.error(e.message) });
+  const lvl = { critical: "neg", warning: "warn", info: "neutral" } as const;
+  return (
+    <div className="mb-5 grid gap-5 lg:grid-cols-3">
+      <Panel title={<span className="flex items-center gap-2"><ShieldAlert className="size-4" />Kill switch
+        {d.active ? <Tag tone="neg">{d.mode === "flatten" ? "flatten" : "no new entries"}</Tag> : <Tag tone="pos">off</Tag>}</span>}>
+        {d.active ? (
+          <div className="grid gap-3 text-sm">
+            <p>{d.reason}</p>
+            <p className="text-xs text-muted">Set by {d.by || "\u2013"} {d.at ? `at ${when(d.at)}` : ""}. Jobs read it before every plan.</p>
+            <div className="flex flex-wrap gap-2">
+              {d.mode !== "flatten" && <Button variant="danger" onClick={() => setConfirm("flatten")}><OctagonX className="size-4" />Close all positions</Button>}
+              <Button onClick={() => setConfirm("resume")}><Play className="size-4" />Resume trading</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-3 text-sm">
+            <p className="text-muted">Stops every paper and live job started by the dashboard or the scheduler at its next run.</p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="danger" onClick={() => setConfirm("halt_new")}><ShieldAlert className="size-4" />Stop new entries</Button>
+              <Button variant="danger" onClick={() => setConfirm("flatten")}><OctagonX className="size-4" />Close all positions</Button>
+            </div>
+          </div>
+        )}
+      </Panel>
+      <Panel title="Automatic limits">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Capital"><Input type="number" value={String(lim.capital)} onChange={(e) => setLim({ ...lim, capital: Number(e.target.value) })} /></Field>
+          <Field label="Max drawdown %" hint="Of capital, realised; empty = off"><Input type="number" step="any" value={pct(lim.max_drawdown)} onChange={(e) => setPct("max_drawdown", e.target.value)} /></Field>
+          <Field label="Max daily loss %" hint="Empty = off"><Input type="number" step="any" value={pct(lim.max_daily_loss)} onChange={(e) => setPct("max_daily_loss", e.target.value)} /></Field>
+          <Field label="Reconciliation mismatches" hint="In a row; empty = off"><Input type="number" value={lim.max_recon_failures ?? ""}
+            onChange={(e) => setLim({ ...lim, max_recon_failures: e.target.value === "" ? null : Number(e.target.value) })} /></Field>
+        </div>
+        <div className="mt-3 flex justify-end"><Button onClick={saveLimits} disabled={save.isPending}>Save limits</Button></div>
+      </Panel>
+      <Panel flush title="Events">
+        {ev.data?.length ? (
+          <ul className="max-h-72 divide-y divide-line overflow-y-auto text-sm">
+            {ev.data.map((e, i) => (
+              <li key={i} className="px-4 py-2">
+                <div className="flex items-center gap-2"><Tag tone={lvl[e.level] ?? "neutral"}>{e.level}</Tag>
+                  <span className="text-xs text-muted">{when(e.at)} · {e.source}</span></div>
+                <div className="mt-0.5">{e.message}</div>
+              </li>
+            ))}
+          </ul>
+        ) : <Empty title="No events">Trips, resumes, missed and failed runs appear here.</Empty>}
+      </Panel>
+      <Dialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}
+        title={confirm === "resume" ? "Resume trading?" : confirm === "flatten" ? "Close all positions?" : "Stop new entries?"}>
+        <div className="grid gap-4">
+          <p className="text-sm text-muted">{confirm === "resume" ? "The next paper / live run plans new entries again."
+            : confirm === "flatten" ? "The next run of every job sends a close order for each open position and opens nothing."
+            : "The next run of every job opens nothing; open positions exit by their own rules."}</p>
+          {confirm !== "resume" && <Field label="Reason"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="stopped from the dashboard" /></Field>}
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setConfirm(null)}>Cancel</Button>
+            <Button variant={confirm === "resume" ? "primary" : "danger"} onClick={act} disabled={save.isPending}>Confirm</Button>
+          </div>
+        </div>
+      </Dialog>
+    </div>
   );
 }
 
