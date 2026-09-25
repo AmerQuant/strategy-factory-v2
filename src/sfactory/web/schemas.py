@@ -123,7 +123,8 @@ class BrokerAccount(Doc):
 
 
 class JobPreset(Doc):
-    kind: Literal["run_real", "run_daily", "run_intraday", "convert_costs", "bench_speed", "check_survivorship"]
+    kind: Literal["run_real", "run_daily", "run_intraday", "convert_costs", "bench_speed", "check_survivorship",
+                  "export_mt5_specs", "convert_mt5_costs", "refresh_v1_data"]
     args: dict[str, Any] = Field(default_factory=dict)
 
 

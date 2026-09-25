@@ -16,7 +16,8 @@ from pathlib import Path
 
 SCRIPTS = {"run_real": "run_real.py", "run_daily": "run_daily.py", "run_intraday": "run_intraday.py",
            "convert_costs": "convert_moneta_costs.py", "bench_speed": "bench_speed.py",
-           "check_survivorship": "check_survivorship.py"}
+           "check_survivorship": "check_survivorship.py", "export_mt5_specs": "export_mt5_specs.py",
+           "convert_mt5_costs": "convert_mt5_costs.py", "refresh_v1_data": "refresh_v1_data.py"}
 
 
 def build_args(args: dict) -> list[str]:
