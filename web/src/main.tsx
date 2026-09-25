@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { Toaster } from "sonner";
+import { AuthGate } from "@/components/AuthGate";
 import { Layout } from "@/components/Layout";
 import { ThemeProvider, useTheme } from "@/lib/theme";
 import { Collection } from "@/pages/admin/Collection";
@@ -40,7 +41,7 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ThemeProvider>
       <QueryClientProvider client={qc}>
-        <RouterProvider router={router} />
+        <AuthGate><RouterProvider router={router} /></AuthGate>
         <Themed />
       </QueryClientProvider>
     </ThemeProvider>

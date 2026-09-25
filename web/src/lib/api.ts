@@ -12,6 +12,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (res.status === 401 && path !== "/login") window.dispatchEvent(new Event("sf-unauthorized"));
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   const data = text ? JSON.parse(text) : undefined;
@@ -49,6 +50,7 @@ export function useSave<T>(invalidate: string[]) {
 }
 
 // ---- API shapes (the subset the UI uses) ----
+export interface Health { ok: boolean; api_version: string; auth_required: boolean; authenticated: boolean }
 export interface MethodMeta {
   method: string; family: string; grid: number[]; default: number; needs_context: string | null;
   neutral_exit: Record<string, unknown>; exit_library: Record<string, unknown>[];
