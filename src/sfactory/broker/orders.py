@@ -58,6 +58,7 @@ class VirtualPosition:
     entry_date: date | None
     entry_px: float
     commission: float = 0.0
+    dividends: float = 0.0      # cash received (long) or paid (short) on ex-dates while held
 
 
 @dataclass
@@ -67,7 +68,9 @@ class RowBook:
     positions: dict = field(default_factory=dict)      # symbol -> VirtualPosition
     closed: list = field(default_factory=list)
 
-    def apply(self, rf: RowFill) -> None:
+    def apply(self, rf: RowFill, swap_pct: float = 0.0, day_count: int = 360) -> None:
+        """swap_pct: the modelled financing rate (% per year, negative = charge) for this position's side;
+        charged per calendar day held on close, exactly as the research engine does."""
         o = rf.order
         if o.intent == "open":
             self.positions[o.symbol] = VirtualPosition(o.row, o.symbol, o.qty, o.signal_date, rf.fill_date,
@@ -75,11 +78,26 @@ class RowBook:
             return
         p = self.positions.pop(o.symbol)
         gross = p.qty * (rf.price - p.entry_px)
+        nights = (rf.fill_date - p.entry_date).days if rf.fill_date and p.entry_date else 0
+        fin = abs(p.qty) * p.entry_px * swap_pct / 100 / day_count * nights
         self.closed.append({"row": self.row, "symbol": o.symbol, "signal_date": p.signal_date,
                             "entry_date": p.entry_date, "exit_date": rf.fill_date, "entry_px": p.entry_px,
                             "exit_px": rf.price, "shares": abs(p.qty), "gross_pnl": gross,
-                            "cost": p.commission + rf.commission,
-                            "net_pnl": gross - p.commission - rf.commission})
+                            "cost": p.commission + rf.commission, "dividends": p.dividends, "financing": fin,
+                            "net_pnl": gross - p.commission - rf.commission + p.dividends + fin})
+
+    def accrue_dividends(self, amounts: dict, day) -> float:
+        """Credit (long) / debit (short) the dividend of every symbol whose ex-date is `day`, for positions held
+        at the previous close (opened before `day`); positions closed at `day`'s open still get it, as in the
+        research engine (the holder at the prior close is entitled). Returns the total cash."""
+        tot = 0.0
+        for sym, p in self.positions.items():
+            amt = amounts.get(sym, 0.0)
+            if amt > 0 and p.entry_date is not None and p.entry_date < day:
+                cash = p.qty * amt
+                p.dividends += cash
+                tot += cash
+        return tot
 
 
 def net_orders(orders: list[Order]) -> list[NetOrder]:

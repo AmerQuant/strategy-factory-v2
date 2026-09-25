@@ -9,12 +9,14 @@ simulated broker: `positions()` -> {symbol: signed net volume} and `execute(net_
 - Volumes are rounded down to the symbol's `volume_step` and dropped below `volume_min` (reported, not sent).
 - `dry_run=True` builds every request without sending it (first contact with a live account).
 - `symbol_map` maps research symbols to broker symbols (e.g. "AAPL" -> "AAPL.US").
+Commissions come from the deal history of each order (`history_deals_get(ticket=deal)`); `deal_costs` and
+`open_swap` report realised commission / fee / swap for comparison with the cost model.
 Not yet run against a live terminal from the development environment (no Windows / MT5 there): the tests use
 a fake terminal with the documented API surface.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from sfactory.broker.orders import Fill, NetOrder
 
@@ -74,15 +76,21 @@ class MT5Broker:
             req["position"] = position
         return req
 
-    def _send(self, req: dict) -> tuple[float, float, str]:
+    def _send(self, req: dict) -> tuple[float, float, str, float]:
+        """(volume, price, broker ref, commission as a positive cost from the deal history)."""
         self.requests.append(req)
         if self.dry_run:
-            return req["volume"], req["price"], "dry-run"
+            return req["volume"], req["price"], "dry-run", 0.0
         res = self.mt5.order_send(req)
         if res is None or res.retcode != self.mt5.TRADE_RETCODE_DONE:
             code = None if res is None else res.retcode
             raise MT5Error(f"order_send failed for {req['symbol']}: retcode {code}, {self.mt5.last_error()}")
-        return res.volume, res.price, str(res.order)
+        comm = 0.0
+        deal = getattr(res, "deal", 0)
+        if deal:
+            for d in self.mt5.history_deals_get(ticket=deal) or ():
+                comm -= float(getattr(d, "commission", 0.0)) + float(getattr(d, "fee", 0.0))   # MT5: charges < 0
+        return res.volume, res.price, str(res.order), comm
 
     def _round(self, bsym: str, qty: float) -> float:
         info = self.mt5.symbol_info(bsym)
@@ -119,12 +127,41 @@ class MT5Broker:
                     legs.append((rest, None))
             else:
                 legs = [(qty, None)]
-            vol_px, filled, refs = 0.0, 0.0, []
+            vol_px, filled, refs, comm = 0.0, 0.0, [], 0.0
             for q, ticket in legs:
-                v, px, ref = self._send(self._request(bsym, q, ticket))
+                v, px, ref, c = self._send(self._request(bsym, q, ticket))
                 filled += v * (1 if q > 0 else -1)
                 vol_px += v * px
+                comm += c
                 refs.append(ref)
             if filled:
-                out[n.symbol] = Fill(n.symbol, filled, vol_px / abs(filled), 0.0, day, ",".join(refs))
+                out[n.symbol] = Fill(n.symbol, filled, vol_px / abs(filled), comm, day, ",".join(refs))
+        return out
+
+    # --- realised costs -----------------------------------------------------------------------------------
+    def deal_costs(self, day: date, days: int = 1) -> dict:
+        """Realised commission, fee and swap of our deals in [day, day + days) from the terminal's deal history,
+        per research symbol and in total (positive = cost). Compare with the cost model (implementation
+        shortfall); the row books keep the modelled figures."""
+        start = datetime(day.year, day.month, day.day)  # noqa: DTZ001 - MT5 takes naive server-time datetimes
+        deals = self.mt5.history_deals_get(start, start + timedelta(days=days)) or ()
+        per: dict = {}
+        for d in deals:
+            if getattr(d, "magic", None) != self.magic:
+                continue
+            s = self.inv.get(d.symbol, d.symbol)
+            x = per.setdefault(s, {"commission": 0.0, "fee": 0.0, "swap": 0.0, "deals": 0})
+            x["commission"] -= float(getattr(d, "commission", 0.0))
+            x["fee"] -= float(getattr(d, "fee", 0.0))
+            x["swap"] -= float(getattr(d, "swap", 0.0))
+            x["deals"] += 1
+        total = {k: sum(v[k] for v in per.values()) for k in ("commission", "fee", "swap", "deals")}
+        return {"day": str(day), "per_symbol": per, "total": total}
+
+    def open_swap(self) -> dict[str, float]:
+        """Swap accrued so far on our open positions (positive = cost), per research symbol."""
+        out: dict[str, float] = {}
+        for p in self._ours():
+            s = self.inv.get(p.symbol, p.symbol)
+            out[s] = out.get(s, 0.0) - float(getattr(p, "swap", 0.0))
         return out
