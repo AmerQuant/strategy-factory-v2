@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -119,11 +119,49 @@ class BrokerAccount(Doc):
 
 
 class JobPreset(Doc):
-    kind: Literal["run_real", "run_daily", "convert_costs", "bench_speed"]
+    kind: Literal["run_real", "run_daily", "run_intraday", "convert_costs", "bench_speed", "check_survivorship"]
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+class Schedule(Doc):
+    """A chain of job presets on a market-time trigger (sfactory.scheduler). Steps run one after the other and the
+    chain stops at the first failure. misfire: what to do when a fire was missed by more than `grace_minutes`
+    (service down): "skip" records it as missed (always right for live jobs), "run_once" runs it once late."""
+    enabled: bool = True
+    steps: list[str] = Field(default_factory=list)
+    kind: Literal["daily", "bars"] = "daily"
+    time: str = "16:30"
+    tz: str = "America/New_York"
+    weekdays: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
+    every_minutes: int = 60
+    session_start: str = "09:30"
+    session_end: str = "16:00"
+    delay_minutes: int = 5
+    misfire: Literal["skip", "run_once"] = "skip"
+    grace_minutes: int = Field(10, ge=0, le=720)
+
+    @field_validator("steps")
+    @classmethod
+    def _steps(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("a schedule needs at least one job preset")
+        bad = [x for x in v if not ID_RE.match(x)]
+        if bad:
+            raise ValueError(f"not a preset id: {bad}")
+        return v
+
+    @model_validator(mode="after")
+    def _trigger(self):
+        self.trigger()
+        return self
+
+    def trigger(self):
+        from sfactory.scheduler.triggers import Trigger
+        return Trigger(self.kind, self.time, self.tz, tuple(self.weekdays), self.every_minutes, self.session_start,
+                       self.session_end, self.delay_minutes)
 
 
 COLLECTIONS: dict[str, type[Doc]] = {
     "catalogues": Catalogue, "policies": Policy, "risk_budgets": RiskBudgetDoc, "cost_profiles": CostProfile,
-    "symbol_maps": SymbolMap, "brokers": BrokerAccount, "job_presets": JobPreset,
+    "symbol_maps": SymbolMap, "brokers": BrokerAccount, "job_presets": JobPreset, "schedules": Schedule,
 }

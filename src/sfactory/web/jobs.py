@@ -1,18 +1,22 @@
 """Background jobs: the admin launches the platform's own scripts (run_real, run_daily, the cost converter, the
 speed benchmark) as subprocesses from a saved preset. Logs go to `<config_dir>/jobs/<job>.log`; job metadata to
-`<config_dir>/jobs/<job>.json`, so the list survives a server restart."""
+`<config_dir>/jobs/<job>.json`, so the list survives a server restart. The web server and the scheduler service
+share the folder: each job records its runner, and a manager only marks a lost job as "unknown" when that job was
+started by the same kind of runner (a running scheduler job is left alone by the dashboard)."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-SCRIPTS = {"run_real": "run_real.py", "run_daily": "run_daily.py", "convert_costs": "convert_moneta_costs.py",
-           "bench_speed": "bench_speed.py"}
+SCRIPTS = {"run_real": "run_real.py", "run_daily": "run_daily.py", "run_intraday": "run_intraday.py",
+           "convert_costs": "convert_moneta_costs.py", "bench_speed": "bench_speed.py",
+           "check_survivorship": "check_survivorship.py"}
 
 
 def build_args(args: dict) -> list[str]:
@@ -33,14 +37,15 @@ def build_args(args: dict) -> list[str]:
 
 
 class JobManager:
-    def __init__(self, root: str | Path, scripts_dir: str | Path, python: str | None = None):
+    def __init__(self, root: str | Path, scripts_dir: str | Path, python: str | None = None, runner: str = "web"):
+        self.runner = runner
         self.root = Path(root) / "jobs"
         self.root.mkdir(parents=True, exist_ok=True)
         self.scripts_dir = Path(scripts_dir)
         self.python = python or sys.executable
         self._procs: dict[str, subprocess.Popen] = {}
 
-    def launch(self, kind: str, args: dict, preset: str = "") -> dict:
+    def launch(self, kind: str, args: dict, preset: str = "", origin: str = "") -> dict:
         if kind not in SCRIPTS:
             raise ValueError(f"unknown job kind {kind}")
         script = self.scripts_dir / SCRIPTS[kind]
@@ -57,7 +62,7 @@ class JobManager:
         self._procs[jid] = proc
         meta = {"id": jid, "kind": kind, "preset": preset, "cmd": cmd, "pid": proc.pid,
                 "started_at": datetime.now(UTC).isoformat(timespec="seconds"), "status": "running",
-                "returncode": None}
+                "returncode": None, "runner": self.runner, "origin": origin}
         self._save(meta)
         return meta
 
@@ -67,8 +72,10 @@ class JobManager:
     def _refresh(self, meta: dict) -> dict:
         proc = self._procs.get(meta["id"])
         if meta["status"] == "running":
-            if proc is None:                                  # server restarted: the process is not ours now
-                meta["status"] = "unknown"
+            if proc is None:
+                if meta.get("runner", "web") != self.runner:  # another process runs it and will record the end
+                    return meta
+                meta["status"] = "unknown"                    # our runner restarted: the process is not ours now
             elif proc.poll() is not None:
                 meta["returncode"] = proc.returncode
                 meta["status"] = "succeeded" if proc.returncode == 0 else "failed"
@@ -87,7 +94,16 @@ class JobManager:
         meta = self._refresh(json.loads(p.read_text(encoding="utf-8")))
         log = self.root / f"{jid}.log"
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.exists() else []
-        return {**meta, "log": lines[-tail:]}
+        return {**meta, "log": lines[-tail:] if tail > 0 else []}
+
+    def wait(self, jid: str, poll: float = 0.5, timeout: float | None = None) -> dict:
+        """Block until the job ends (the scheduler runs a chain's steps one after the other)."""
+        t0 = time.monotonic()
+        while True:
+            meta = self.get(jid, tail=0)
+            if meta["status"] != "running" or (timeout is not None and time.monotonic() - t0 > timeout):
+                return meta
+            time.sleep(poll)
 
     def cancel(self, jid: str) -> dict:
         proc = self._procs.get(jid)
