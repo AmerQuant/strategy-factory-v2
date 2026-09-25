@@ -13,6 +13,9 @@ Without --membership the universe is the top-N by trailing dollar volume at each
 Intraday: `--timeframe 1H` reads the hourly store; `--resample 4h` builds 4H bars from it and `--clock-shift 7h`
 moves the clock to a broker day (17:00 New York = 00:00). Resampled / shifted data is a new data version.
 
+`--analyze-accepted` adds the edge on/off and sizing ablations of every accepted row to the evidence (candidates
+for the next frozen policy; nothing is switched on automatically).
+
 Speed: `--workers 0` precomputes the trade cache on all cores first (ADR-0004); results do not depend on it.
 """
 from __future__ import annotations
@@ -37,6 +40,7 @@ from sfactory.engine.parallel import precompute
 from sfactory.evaluation.catalog_runner import run_catalog
 from sfactory.evaluation.evidence import build_evidence, dumps
 from sfactory.evaluation.holdout import run_holdout
+from sfactory.evaluation.row_analysis import analyze_rows, summarize
 from sfactory.policy.catalog import (
     CATALOG_VERSION,
     DIVERSE_CATALOG_VERSION,
@@ -75,6 +79,8 @@ def parse(argv=None):
     ap.add_argument("--no-ensembles", action="store_true")
     ap.add_argument("--no-robustness", action="store_true")
     ap.add_argument("--open-holdout", action="store_true", help="burns the holdout for this data version")
+    ap.add_argument("--analyze-accepted", action="store_true",
+                    help="edge on/off and sizing ablations for every accepted row (registry trials; evidence)")
     ap.add_argument("--workers", type=int, default=1,
                     help="processes for the trade-cache precompute (0 = all cores); results do not depend on it")
     return ap.parse_args(argv)
@@ -129,6 +135,9 @@ def main(argv=None) -> dict:
     if a.workers != 1:
         precompute(cache, rows, n_workers=a.workers or None)
     cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev)
+    analysis = {}
+    if a.analyze_accepted:
+        analysis = analyze_rows(fm, cache, dev, mem, [cat["results"][i].config for i in cat["accepted"]], reg)
     hold = None
     if a.open_holdout:
         full = TradeCache(prepare_arrays(bars, divs), version + "-full", cost_model=costs)
@@ -142,11 +151,14 @@ def main(argv=None) -> dict:
             "symbols_loaded": len(load.symbols), "symbols_skipped": load.skipped, "audit": audit,
             "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()}}
     pkg = build_evidence(cat, hold, meta)
+    if analysis:
+        pkg["row_analysis"], pkg["row_analysis_summary"] = analysis, summarize(analysis)
     (out / "evidence.json").write_text(dumps(pkg), encoding="utf-8")
     (out / "report.html").write_text(render_html(pkg), encoding="utf-8")
     issues.write_csv(out / "audit_issues.csv")
     summary = {"accepted": [cat["table"][i]["row"] for i in cat["accepted"]], "trials": cat["n_trials"],
-               "combined_sharpe": cat["combined"]["sharpe"], "holdout": hold and hold["status"], "out": str(out)}
+               "combined_sharpe": cat["combined"]["sharpe"], "holdout": hold and hold["status"], "out": str(out),
+               "row_analysis": summarize(analysis) if analysis else None}
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     return summary
 
