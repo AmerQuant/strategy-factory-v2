@@ -8,7 +8,7 @@ import pytest
 from sfactory.broker.orders import Order, RowBook, allocate, net_orders
 from sfactory.broker.reconcile import reconcile
 from sfactory.broker.sim import SimulatedBroker
-from sfactory.costs.model import CostModel
+from sfactory.costs.model import CostModel, SymbolCost
 from sfactory.data.adjust import add_adj_factor
 from sfactory.data.synthetic import make_market
 from sfactory.engine.cache import TradeCache, prepare_arrays
@@ -130,3 +130,31 @@ def test_capacity_and_exit_only_rows(mkt):
     day = date(2012, 9, 4)
     plan = plan_day(TradeCache(arrays_upto(arrays, day), "k"), book, day, pt.books, exit_only={cfg.rid})
     assert all(o.intent == "close" for o in plan.orders)
+
+
+def test_paper_dividends_and_swap_match_research():
+    bars, divs, _ = make_market(6, 1200, seed=9, kind="mean_revert", dividends=True, listings=False)
+    bars = add_adj_factor(bars, divs)
+    arrays = prepare_arrays(bars, divs)
+    ex = ExitSpec("time", 10, 10)                        # long holds make ex-dates inside trades likely
+    cfg = LadderConfig(method="rsi", exits=(ex,))
+    start, end = date(2012, 6, 1), date(2013, 12, 31)
+    cm = CostModel(SymbolCost(0.0, 2.0, 0.0, -7.2, -3.6))    # with swap
+    pt = run_paper(arrays, _book(cfg, 25.0, ex, sorted(arrays)), _days(arrays, start, end), SimulatedBroker(cm),
+                   cost_model=cm)
+    paper = pt.closed_trades()
+    research = TradeCache(arrays, "r", cost_model=cm)
+    last = _days(arrays, start, end)[-1]
+    with_div = 0
+    for s in sorted(arrays):
+        r = research.trades(s, EntrySpec("rsi", 25.0), ex)
+        first_exit = r.filter(pl.col("exit_date") >= start)["exit_date"].min()
+        r = r.filter((pl.col("signal_date") >= first_exit) & (pl.col("exit_date") < last)).sort("signal_date")
+        p = paper.filter((pl.col("symbol") == s) & (pl.col("signal_date") >= first_exit)
+                         & (pl.col("exit_date") < last)).sort("signal_date")
+        assert p["signal_date"].to_list() == r["signal_date"].to_list()
+        assert np.allclose(p["dividends"] / p["shares"], r["dividends"] / r["shares"])
+        assert np.allclose(p["financing"] / p["shares"], r["financing"] / r["shares"])
+        assert np.allclose(p["net_pnl"] / p["shares"], r["net_pnl"] / r["shares"])
+        with_div += int((r["dividends"] != 0).sum())
+    assert with_div >= 3

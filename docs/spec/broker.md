@@ -31,10 +31,14 @@ account holds one net position per symbol as the books assume. Volumes are round
 skipped below `volume_min`. `dry_run=True` builds requests without sending them. `symbol_map` maps research
 symbols to broker symbols. Tested against a fake terminal only (no Windows / MT5 in the development environment).
 
+## Cash flows
+- Dividends: every position held at the prior close of an ex-date gets qty x dividend (short pays), accrued
+  before the day's fills, exactly as the research engine credits them.
+- Swap: the modelled financing (cost model rate / day count x calendar days held) is booked on close.
+- Tested: paper trades equal research trades per share including dividends and swap on a dividend market.
+- MT5: fills carry the real commission + fee from the deal history; `deal_costs(day)` and `open_swap()` report
+  realised commission / fee / swap for the implementation-shortfall comparison (the books keep modelled costs).
+
 ## Not yet
-- A persistent daily job (`scripts/run_paper.py`: state file with books, book from the last DP, market-on-open
-  scheduling) and the first live connection test on the owner's machine.
-- Commissions and swap from MT5 deal history (the adapter reports fills at the deal price, commission 0).
-- Dividends on paper positions (the simulated broker does not credit them yet; parity tests use a
-  dividend-free market).
+- The first live connection test on the owner's machine (daily job: docs/spec/daily.md).
 - Intraday planning (the placeholder bar is the next business day).

@@ -16,7 +16,12 @@ class FakeMT5:
 
     def __init__(self, hedging=True, fail=False):
         self.mode = 2 if hedging else 0
-        self.pos, self.sent, self.fail, self._t = [], [], fail, 0
+        self.pos, self.sent, self.fail, self._t, self.deals = [], [], fail, 0, []
+
+    def history_deals_get(self, date_from=None, date_to=None, ticket=None):
+        if ticket is not None:
+            return tuple(d for d in self.deals if d.ticket == ticket)
+        return tuple(self.deals)
 
     def initialize(self, **kw):
         return True
@@ -42,6 +47,8 @@ class FakeMT5:
             return NS(retcode=10013, volume=0, price=0, order=0)
         self._t += 1
         sign = 1 if req["type"] == self.ORDER_TYPE_BUY else -1
+        self.deals.append(NS(ticket=self._t, symbol=req["symbol"], magic=req["magic"], commission=-0.5 * req["volume"],
+                             fee=-0.1, swap=-0.25 if "position" in req else 0.0))
         if "position" in req:
             p = next(p for p in self.pos if p.ticket == req["position"])
             p.volume = round(p.volume - req["volume"], 8)
@@ -57,7 +64,8 @@ class FakeMT5:
         else:
             self.pos.append(NS(ticket=self._t, symbol=req["symbol"], volume=req["volume"],
                                type=0 if sign > 0 else 1, magic=req["magic"], time=self._t))
-        return NS(retcode=self.TRADE_RETCODE_DONE, volume=req["volume"], price=req["price"], order=self._t)
+        return NS(retcode=self.TRADE_RETCODE_DONE, volume=req["volume"], price=req["price"], order=self._t,
+                  deal=self._t)
 
 
 D = date(2026, 9, 25)
@@ -91,3 +99,15 @@ def test_foreign_positions_rounding_dry_run_and_errors():
         MT5Broker(FakeMT5(fail=True)).execute([NetOrder("Z", 1.0, ())], {}, D)
     with pytest.raises(MT5Error):
         MT5Broker(FakeMT5()).execute([NetOrder("BAD", 1.0, ())], {}, D)
+
+
+def test_commissions_and_swap_from_the_deal_history():
+    fake = FakeMT5(hedging=True)
+    br = MT5Broker(fake, symbol_map={"AAPL": "AAPL.US"})
+    f = br.execute([NetOrder("AAPL", 10.0, ())], {}, D)["AAPL"]
+    assert f.commission == pytest.approx(0.5 * 10 + 0.1)
+    br.execute([NetOrder("AAPL", -10.0, ())], {}, D)
+    rep = br.deal_costs(D)
+    assert rep["per_symbol"]["AAPL"]["deals"] == 2
+    assert rep["total"]["commission"] == pytest.approx(10.0) and rep["total"]["swap"] == pytest.approx(0.25)
+    assert MT5Broker(FakeMT5(), dry_run=True).execute([NetOrder("Z", 1.0, ())], {}, D)["Z"].commission == 0.0
