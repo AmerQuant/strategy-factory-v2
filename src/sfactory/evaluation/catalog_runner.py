@@ -31,6 +31,7 @@ from sfactory.policy.catalog import taxonomy
 from sfactory.policy.ensemble import run_row_any
 from sfactory.policy.ladder import LadderConfig
 from sfactory.portfolio.combine import RiskBudget, combine_rows, effective_n, family_ensemble
+from sfactory.progress import progress
 from sfactory.registry.repo import Registry
 from sfactory.stats.core import moments, sharpe_diff_ci, sharpe_report
 from sfactory.stats.multiple import benjamini_hochberg, spa_test
@@ -48,7 +49,11 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
     registry = registry or Registry()
     folds = fm.dev_folds()
     configs = [replace(r, rung=g) for r in rows for g in rungs]
-    results = [run_row_any(fm, cache, bars_dev, membership, c, registry) for c in configs]
+    bar = progress().counter("catalogue rows", len(configs))
+    results = []
+    for c in configs:
+        results.append(run_row_any(fm, cache, bars_dev, membership, c, registry))
+        bar.tick(label=c.rid)
     start, end = folds[0].dp, folds[-1].oos_end
     mat = aligned_daily([r.oos_trades for r in results], start, end)
     cal = pl.date_range(start, end, "1d", eager=True)
@@ -87,6 +92,7 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
             accepted, base = trial, cand
     robustness = {}
     if divs_dev is not None:
+        rbar = progress().counter("robustness (accepted rows)", len(accepted))
         for i in list(accepted):
             rep = run_robustness(fm, cache, bars_dev, divs_dev, membership, configs[i], dd_limit=dd_max,
                                  workers=workers)
@@ -94,6 +100,7 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
                                            "cost_x1.5_expectancy": rep["cost_x1.5"]["expectancy"],
                                            "delay_keep": rep["delay_1bar"]["keep"], "mc_dd_p95": rep["mc_dd_p95"]}
             table[i]["robust"] = rep["passed"]
+            rbar.tick(label=table[i]["row"])
             if not rep["passed"]:
                 table[i]["path"] = f"{table[i]['path']}-rejected_by_robustness"
                 accepted.remove(i)

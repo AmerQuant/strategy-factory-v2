@@ -19,6 +19,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 
 from sfactory.engine.cache import TradeCache
+from sfactory.progress import progress
 from sfactory.signals.methods import EntrySpec
 
 
@@ -72,14 +73,17 @@ def precompute(cache: TradeCache, rows, symbols=None, n_workers: int | None = No
                           cache._index_add.get(s), cache._events_id, todo))
     n_workers = n_workers or os.cpu_count() or 1
     added = 0
+    bar = progress().counter("trade cache (symbols)", len(tasks))
     if n_workers <= 1 or len(tasks) <= 1:
         results = map(_worker, tasks)
-        for items in results:
+        for t, items in zip(tasks, results):
             added += cache.merge(items)
+            bar.tick(label=t[0])
     else:
         ctx = mp_context or multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as ex:
-            for items in ex.map(_worker, tasks, chunksize=max(1, len(tasks) // (4 * n_workers))):
+            for t, items in zip(tasks, ex.map(_worker, tasks, chunksize=max(1, len(tasks) // (4 * n_workers)))):
                 added += cache.merge(items)
+                bar.tick(label=t[0])
     return {"symbols": len(syms), "settings": len(specs), "frames_added": added, "workers": n_workers,
             "seconds": round(time.perf_counter() - t0, 3)}
