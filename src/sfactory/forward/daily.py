@@ -77,7 +77,7 @@ def overlay_of(entry) -> dict | None:
 def row_daily_pnl(closed: list, start: date, end: date) -> np.ndarray:
     """Realised net pnl per business day (exit date) in [start, end], zeros on days without exits - the series the
     research overlays run on."""
-    days = np.arange(np.datetime64(start, "D"), np.datetime64(end, "D") + 1)
+    days = np.arange(np.datetime64(start, "D"), np.datetime64(end, "D") + np.timedelta64(1, "D"))
     days = days[np.is_busday(days)]
     out = np.zeros(len(days))
     for t in closed:
