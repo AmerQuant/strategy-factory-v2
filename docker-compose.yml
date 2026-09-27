@@ -1,0 +1,45 @@
+# docker compose up -d --build   ->  dashboard at http://127.0.0.1:8765 (docs/docker.md)
+x-sf: &sf
+  build: .
+  image: sfactory:local
+  env_file: .env
+  volumes:
+    - ${SF_STORE_DIR:?set SF_STORE_DIR in .env}:/store:ro
+    - ${SF_CONFIG_DIR:-./.sf/config}:/config
+    - ${SF_RUNS_DIR:-./.sf/runs}:/runs
+    - ${SF_LIVE_DIR:-./.sf/live}:/live
+
+services:
+  web:
+    <<: *sf
+    command: ["web"]
+    ports: ["127.0.0.1:8765:8765"]        # only this machine; see docs/docker.md for network access
+    restart: unless-stopped
+
+  scheduler:
+    <<: *sf
+    command: ["scheduler"]
+    environment: {SF_SCHEDULER_TAKEOVER: "1"}   # the only scheduler on this config: never run one on the host too
+    healthcheck: {disable: true}
+    restart: unless-stopped
+    depends_on: [web]
+
+  # one-off tools: docker compose run --rm <name>
+  tests:
+    <<: *sf
+    command: ["tests"]
+    healthcheck: {disable: true}
+    profiles: ["tools"]
+
+  cli:                                     # docker compose run --rm cli python scripts/run_real.py ...
+    <<: *sf
+    command: ["shell"]
+    healthcheck: {disable: true}
+    profiles: ["tools"]
+
+  web-typecheck:
+    image: node:20-bookworm-slim
+    working_dir: /web
+    volumes: ["./web:/web"]
+    command: ["sh", "-c", "npm install --no-audit --no-fund && npx tsc -b"]
+    profiles: ["tools"]
