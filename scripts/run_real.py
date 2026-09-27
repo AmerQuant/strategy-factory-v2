@@ -66,6 +66,7 @@ from sfactory.policy.catalog import (
 )
 from sfactory.policy.ladder import LadderConfig
 from sfactory.portfolio.combine import RiskBudget
+from sfactory.progress import progress
 from sfactory.registry.repo import Registry
 from sfactory.report.html import render_html
 from sfactory.timeline.folds import FoldManager
@@ -113,6 +114,8 @@ def main(argv=None) -> dict:
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     symbols = [s.strip() for s in Path(a.symbols).read_text(encoding="utf-8").split() if s.strip()] if a.symbols else None
+    pg = progress()
+    pg.stage("load data")
     cfd = a.asset_class in CFD_CLASSES
     extra: dict = {}
     if cfd:
@@ -141,6 +144,7 @@ def main(argv=None) -> dict:
         check_no_straddle(raw, a.resample or a.timeframe.lower())
         if a.resample or a.clock_shift != "0h":
             version = f"{version}-{a.resample or a.timeframe}-shift{a.clock_shift}"
+    pg.stage(f"audit ({raw['symbol'].n_unique()} symbols, {raw.height} bars)")
     issues = audit_bars(raw)
     audit = audit_summary(issues, len(load.symbols))
     bars = raw.filter(~pl.col("symbol").is_in(audit["excluded_critical"]))
@@ -183,15 +187,19 @@ def main(argv=None) -> dict:
     rows = rows + ens
     reg = Registry(a.registry)
     if a.workers != 1:
+        pg.stage(f"trade cache precompute ({len(rows)} rows)")
         precompute(cache, rows, n_workers=a.workers or None)
+    pg.stage(f"catalogue ({len(rows)} rows: selection per fold, statistics, robustness of accepted rows)")
     budget = RiskBudget(a.max_row_weight, a.max_family_weight, a.target_vol, capital=base.capital)
     cat = run_catalog(fm, cache, dev, mem, rows, registry=reg, divs_dev=None if a.no_robustness else ddev,
                       budget=budget if budget.active else None, workers=a.workers)
     analysis = {}
     if a.analyze_accepted:
+        pg.stage("row analysis (edge on/off, sizing) of accepted rows")
         analysis = analyze_rows(fm, cache, dev, mem, [cat["results"][i].config for i in cat["accepted"]], reg)
     hold = None
     if a.open_holdout:
+        pg.stage("holdout")
         full = TradeCache(prepare_arrays(bars, divs), version + "-full", cost_model=costs)
         full.set_market_regime(*market_up_series(bars), "eqw-ma200")
         if mem is not None:
@@ -203,6 +211,7 @@ def main(argv=None) -> dict:
             "symbols_loaded": len(load.symbols), "symbols_skipped": load.skipped, "audit": audit,
             "caveats": caveats, "costs": a.costs, "folds": {k: str(v) for k, v in fcfg.__dict__.items()},
             "survivorship": {k: v for k, v in surv.items() if not k.startswith("examples")}, **extra}
+    pg.stage("evidence and report")
     pkg = build_evidence(cat, hold, meta)
     if analysis:
         pkg["row_analysis"], pkg["row_analysis_summary"] = analysis, summarize(analysis)
@@ -212,6 +221,7 @@ def main(argv=None) -> dict:
     summary = {"accepted": [cat["table"][i]["row"] for i in cat["accepted"]], "trials": cat["n_trials"],
                "combined_sharpe": cat["combined"]["sharpe"], "holdout": hold and hold["status"], "out": str(out),
                "row_analysis": summarize(analysis) if analysis else None, "survivorship": surv["verdict"]}
+    pg.stage("done")
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     return summary
 
