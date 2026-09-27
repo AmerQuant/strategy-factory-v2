@@ -25,8 +25,9 @@ services:
     depends_on: [web]
 
   # one-off tools: docker compose run --rm <name>
-  tests:
-    <<: *sf
+  tests:                                   # isolated: no .env, no real folders (tests must never touch them)
+    build: .
+    image: sfactory:local
     command: ["tests"]
     healthcheck: {disable: true}
     profiles: ["tools"]
