@@ -123,8 +123,8 @@ def _ichimoku_state(h, lo, c, scale: float):
 def weekdays_left_in_month(dates: np.ndarray) -> np.ndarray:
     """Weekdays after the bar's day up to the month end (a fixed calendar, known in advance)."""
     days = dates.astype("datetime64[D]")
-    nxt = (days.astype("datetime64[M]") + 1).astype("datetime64[D]")
-    return np.busday_count(days + 1, nxt)
+    nxt = (days.astype("datetime64[M]") + np.timedelta64(1, "M")).astype("datetime64[D]")
+    return np.busday_count(days + np.timedelta64(1, "D"), nxt)
 
 
 def _need(ctx: SeriesCtx | None, method: str):

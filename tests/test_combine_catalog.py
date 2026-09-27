@@ -12,7 +12,7 @@ from sfactory.stats.core import sharpe_diff_ci
 
 
 def _cal(n):
-    return np.arange(np.datetime64("2015-01-01"), np.datetime64("2015-01-01") + n, dtype="datetime64[D]")
+    return np.arange(np.datetime64("2015-01-01"), np.datetime64("2015-01-01") + np.timedelta64(n, "D"), dtype="datetime64[D]")
 
 
 def test_effective_n_and_ensemble():
