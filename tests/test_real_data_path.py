@@ -85,7 +85,10 @@ def test_cost_overrides_csv(tmp_path):
     p = tmp_path / "c.csv"
     p.write_text("symbol,spread_bps,swap_long_pct\nAAPL,1.5,-5\n", encoding="utf-8")
     cm = load_cost_overrides(p, CostModel.moneta_share_cfd_proxy())
-    assert cm.per_side_bps("AAPL") == 0.75 + 1 + 1 and cm.swap_pct("AAPL", 1) == -5 and cm.swap_pct("MSFT", 1) == -6.88
+    base = CostModel.moneta_share_cfd_proxy().default          # missing columns fall back to the base default
+    assert cm.per_side_bps("AAPL") == 0.75 + base.commission_bps + base.slippage_bps
+    assert cm.swap_pct("AAPL", 1) == -5 and cm.swap_pct("MSFT", 1) == -6.88
+    assert abs(CostModel.moneta_share_cfd_proxy().per_side_bps("X") - 11.6) < 1e-9   # the v1 Moneta proxy profile
 
 
 def test_fold_config_from_span():

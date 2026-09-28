@@ -58,13 +58,15 @@ class CostModel:
 
     @classmethod
     def moneta_share_cfd_proxy(cls) -> CostModel:
-        """Moneta Markets MT5 share/ETF CFDs, provisional until the per-symbol profiles are imported.
+        """Moneta Markets MT5 share/ETF CFDs, one cost for every symbol, until the per-symbol profiles are imported.
 
-        Swap from the v1 moneta.yaml ETF assumption (-6.88 % long / -3.5 % short per year, D-322),
-        spread / commission / slippage from the v1 us_equity placeholder (2 bps full spread, ~1 bp commission,
-        1 bp slippage). Replace with `load_cost_overrides` once the broker table is exported.
+        Spread / slippage from v1's `us_share_cfd_proxy` profile as converted from the broker build (21.2 bps full
+        spread, no commission, 1 bp slippage: 11.6 bps per side, the median of the 486 Moneta share CFDs was 11.7),
+        swap from the v1 moneta.yaml ETF assumption (-6.88 % long / -3.5 % short per year, D-322).
+        Until 2026-09 this proxy was 2 / 1 / 1 bps (4 bps per side), far below the broker's real costs.
+        Use `load_cost_overrides` with the converted per-symbol file for research that matters.
         """
-        return cls(SymbolCost(2.0, 1.0, 1.0, -6.88, -3.5))
+        return cls(SymbolCost(21.2, 0.0, 1.0, -6.88, -3.5))
 
 
 def load_cost_overrides(path, base: CostModel | None = None) -> CostModel:

@@ -46,6 +46,7 @@ def build_evidence(catalog_report: dict, holdout_report: dict | None, meta: dict
         "rows": rows,
         "combined_dev": catalog_report["combined"],
         "benchmark_all_rows_equal_dev": catalog_report["benchmark_all_equal"],
+        "benchmark_all_rows_equal_dev_gross": catalog_report.get("benchmark_all_equal_gross"),
         "effective_n_all_rows": catalog_report["effective_n_all"],
         "dev_curve": _weekly_curve(catalog_report["dates"], catalog_report["combined_daily"],
                                    catalog_report["benchmark_daily"]) if "combined_daily" in catalog_report else None,
@@ -56,6 +57,9 @@ def build_evidence(catalog_report: dict, holdout_report: dict | None, meta: dict
         "meta_grid": meta.get("meta_grid"),
         "holdout": holdout_report,
     }
+    if pkg["dev_curve"] is not None and catalog_report.get("benchmark_daily_gross") is not None:
+        pkg["dev_curve"]["benchmark_gross"] = _weekly_curve(catalog_report["dates"], catalog_report["combined_daily"],
+                                                            catalog_report["benchmark_daily_gross"])["benchmark"]
     return _clean(pkg)
 
 
