@@ -165,7 +165,9 @@ def render_html(pkg: dict, title: str = "گزارش رویه‌ی معاملات
     dc = pkg.get("dev_curve")
     if dc:
         parts.append('<h2>سود تجمعی OOS دوره‌ی توسعه</h2><div class="card">'
-                     + svg_lines(dc["dates"], {"رویه‌ی ترکیبی": dc["combined"], "وزن برابر همه‌ی ردیف‌ها": dc["benchmark"]})
+                     + svg_lines(dc["dates"], {"رویه‌ی ترکیبی": dc["combined"], "وزن برابر همه‌ی ردیف‌ها": dc["benchmark"],
+                                               **({"وزن برابر، بدون هزینه": dc["benchmark_gross"]}
+                                                  if dc.get("benchmark_gross") else {})})
                      + "</div>")
     if h.get("curve"):
         c = h["curve"]
@@ -194,6 +196,24 @@ def render_html(pkg: dict, title: str = "گزارش رویه‌ی معاملات
     parts.append('<h2>همه‌ی ردیف‌ها</h2><div class="card wrap"><table><tr><th>ردیف</th><th>خانواده</th><th>جهت</th>'
                  '<th>معاملات</th><th>شارپ</th><th>افت</th><th>p</th><th>BH</th><th>DSR</th><th>روباستنس</th>'
                  f'<th>مسیر</th></tr>{body}</table></div>')
+    if any("sharpe_gross" in r for r in rows):
+        def share(r):
+            g = r.get("pnl_gross")
+            return fa(100 * (r["cost_trading"] + r["cost_swap"]) / g, 0) + "٪" if g and g > 0 else "—"
+        cb = "".join(
+            f'<tr><td class="num">{fa(r["row"])}</td><td class="num">{fa(r.get("sharpe_gross"))}</td>'
+            f'<td class="num">{fa(r.get("sharpe_no_swap"))}</td><td class="num">{fa(r.get("sharpe"))}</td>'
+            f'<td class="num">{fa(r.get("pnl_gross"), 0)}</td><td class="num">{fa(r.get("cost_trading"), 0)}</td>'
+            f'<td class="num">{fa(r.get("cost_swap"), 0)}</td><td class="num">{fa(r.get("pnl_net"), 0)}</td>'
+            f'<td class="num">{share(r)}</td></tr>'
+            for r in sorted(rows, key=lambda r: -(r.get("sharpe_gross") or 0)))
+        parts.append('<h2>اثر هزینه‌ها</h2><div class="card wrap"><p class="muted">همان معاملات OOS هر ردیف، '
+                     'یک بار بدون هیچ هزینه، یک بار با هزینه‌ی معامله بدون سوآپ، و یک بار خالص. انتخاب تنظیمات با '
+                     'هزینه انجام شده؛ انتخاب بدون هزینه آزمون دیگری است. بنچمارک وزن برابر بدون هزینه: '
+                     f'{fa(pkg.get("benchmark_all_rows_equal_dev_gross"))}</p>'
+                     '<table><tr><th>ردیف</th><th>شارپ بدون هزینه</th><th>شارپ بدون سوآپ</th><th>شارپ خالص</th>'
+                     '<th>سود ناخالص</th><th>هزینه‌ی معامله</th><th>سوآپ</th><th>سود خالص</th>'
+                     f'<th>هزینه از سود ناخالص</th></tr>{cb}</table></div>')
     rob = pkg.get("robustness_of_accepted_rows") or {}
     if rob:
         keys_m = sorted({k for v in rob.values() for k in v.get("mandatory", {})})

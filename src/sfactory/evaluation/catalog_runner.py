@@ -42,6 +42,21 @@ def _sharpe_ann(x: np.ndarray) -> float:
     return float(x.mean() / sd * np.sqrt(252)) if sd > 0 else 0.0
 
 
+def _daily_of(trade_sets: list, value: pl.Expr, start, end) -> np.ndarray:
+    """aligned_daily of another pnl column of the same trades (cost breakdown: same trades, different pnl)."""
+    return aligned_daily([t.with_columns(value.alias("net_pnl")) if len(t) else t for t in trade_sets], start, end)
+
+
+def cost_breakdown(trades: pl.DataFrame) -> dict:
+    """Totals of a row's OOS trades: gross (price move + dividends), trading costs, swap, net. Costs as positive
+    numbers; net = gross - trading cost - swap."""
+    if len(trades) == 0:
+        return {"pnl_gross": 0.0, "cost_trading": 0.0, "cost_swap": 0.0, "pnl_net": 0.0}
+    s = trades.select((pl.col("gross_pnl") + pl.col("dividends")).sum().alias("g"), pl.col("cost").sum().alias("c"),
+                      pl.col("financing").sum().alias("f"), pl.col("net_pnl").sum().alias("n")).row(0)
+    return {"pnl_gross": float(s[0]), "cost_trading": float(s[1]), "cost_swap": float(-s[2]), "pnl_net": float(s[3])}
+
+
 def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs=("A1",),
                 registry: Registry | None = None, q: float = 0.10, dsr_min: float = 0.95,
                 dd_max: float = 0.35, corr_cap: float = 0.6, divs_dev: pl.DataFrame | None = None,
@@ -56,6 +71,10 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
         bar.tick(label=c.rid)
     start, end = folds[0].dp, folds[-1].oos_end
     mat = aligned_daily([r.oos_trades for r in results], start, end)
+    # cost impact on the same trades (selection was made net of costs; a zero-cost selection is another experiment)
+    oos = [r.oos_trades for r in results]
+    gross = _daily_of(oos, pl.col("gross_pnl") + pl.col("dividends"), start, end)
+    no_swap = _daily_of(oos, pl.col("net_pnl") - pl.col("financing"), start, end)
     cal = pl.date_range(start, end, "1d", eager=True)
     dates = cal.filter(cal.dt.weekday() <= 5).to_numpy()
     n_trials = registry.count_trials()
@@ -69,7 +88,9 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
     for i, (c, r, rep) in enumerate(zip(configs, results, reps)):
         table.append({"i": i, "row": c.rid, "rung": c.rung, "n": r.stats["n"], "sharpe": _sharpe_ann(mat[:, i]),
                       "max_dd": r.stats["max_dd"], "expectancy": r.stats["expectancy"], "p": float(pvals[i]),
-                      "bh": bool(bh[i]), "dsr": rep["dsr"], "path": None, **taxonomy(c)})
+                      "bh": bool(bh[i]), "dsr": rep["dsr"], "path": None, **taxonomy(c),
+                      "sharpe_gross": _sharpe_ann(gross[:, i]), "sharpe_no_swap": _sharpe_ann(no_swap[:, i]),
+                      **cost_breakdown(r.oos_trades)})
     path1 = [t["i"] for t in table if t["bh"] and t["dsr"] >= dsr_min]
     for i in path1:
         table[i]["path"] = "standalone"
@@ -130,6 +151,7 @@ def run_catalog(fm, cache, bars_dev, membership, rows: list[LadderConfig], rungs
                      "leverage_per_fold": list(combined.leverage) if combined else [],
                      "risk_budget": asdict(budget) if budget is not None else None},
         "benchmark_all_equal": _sharpe_ann(all_eq),
+        "benchmark_all_equal_gross": _sharpe_ann(gross.mean(axis=1)), "benchmark_daily_gross": gross.mean(axis=1),
         "effective_n_all": effective_n(mat),
         "daily": mat, "dates": dates, "results": results,
         "combined_daily": combined.daily if combined else np.zeros(len(dates)), "benchmark_daily": all_eq,
