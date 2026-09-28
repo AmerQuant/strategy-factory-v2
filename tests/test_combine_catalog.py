@@ -64,3 +64,24 @@ def test_catalog_runner_screens_and_counts_trials():
     fams = {mr["table"][i]["family"] for i in mr["accepted"]}
     assert fams == {"MR"} and len(mr["accepted"]) >= 5
     assert mr["combined"]["sharpe"] > mr["benchmark_all_equal"]
+
+
+def test_cost_breakdown_uses_the_same_trades():
+    from sfactory.costs.model import CostModel
+    from sfactory.evaluation.evidence import build_evidence
+    from sfactory.report.html import render_html
+    fm, cache, dev, mem = build("mean_revert", seed=11)
+    cache.cost_model = CostModel.moneta_share_cfd_proxy()
+    rows = [r for r in equity_rows(LadderConfig(max_positions=5, max_new_per_day=2)) if r.method == "rsi"]
+    rep = run_catalog(fm, cache, dev, mem, rows)
+    for t, r in zip(rep["table"], rep["results"]):
+        tr = r.oos_trades
+        assert abs(t["pnl_gross"] - t["cost_trading"] - t["cost_swap"] - t["pnl_net"]) < 1e-6 * max(1, abs(t["pnl_gross"]))
+        assert abs(t["pnl_net"] - float(tr["net_pnl"].sum())) < 1e-6 * max(1.0, abs(t["pnl_net"]))
+        assert t["cost_trading"] > 0 and t["cost_swap"] > 0            # the proxy charges both
+        assert t["sharpe_gross"] > t["sharpe_no_swap"] > t["sharpe"]     # costs only lower the result
+    pkg = build_evidence(rep, None, {"data": "syn"})
+    assert pkg["benchmark_all_rows_equal_dev_gross"] > pkg["benchmark_all_rows_equal_dev"]
+    assert len(pkg["dev_curve"]["benchmark_gross"]) == len(pkg["dev_curve"]["benchmark"])
+    html = render_html(pkg)
+    assert "اثر هزینه‌ها" in html and "شارپ بدون هزینه" in html and "وزن برابر، بدون هزینه" in html
