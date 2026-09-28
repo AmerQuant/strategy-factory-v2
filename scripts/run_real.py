@@ -158,6 +158,9 @@ def main(argv=None) -> dict:
         surv = {"verdict": "not_applicable", "advice": "fixed CFD symbol list: survivorship check not applicable"}
     else:
         caveats = list(load.caveats) if not a.dividends else []
+        if a.costs in ("moneta", "flat5"):
+            caveats.append(f"costs '{a.costs}': one cost for every symbol, not the broker's per-symbol costs - "
+                           "convert the broker profiles (scripts/convert_moneta_costs.py) and pass the CSV")
         if mem is None:
             caveats.append(f"no index membership file: universe = top {a.top_n} by trailing dollar volume at each DP")
         surv = survivorship_report(bars, mem)
